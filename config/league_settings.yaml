@@ -1,0 +1,101 @@
+league:
+  id: 87941
+  name: "The Vlad Guerrero Invitational"
+  platform: "Yahoo Sports Fantasy Baseball"
+  url: "https://baseball.fantasysports.yahoo.com/league/hockeytwitsbaseballfantasy"
+  max_teams: 10
+  scoring_type: "Head-to-Head - Categories"
+  player_universe: "All baseball"
+  divisions: 2
+
+draft:
+  type: "Live Standard Draft"
+  date: "2026-03-21T13:00:00-06:00"  # MDT
+  pick_time_seconds: 45
+  allow_pick_trades: false
+  post_draft_players: "Free Agents"
+
+scoring:
+  start_week: 1
+  win_condition: "highest_value"  # default: team with higher value wins the category
+  batter_categories:
+    H: { desc: "Hits", win: highest }
+    HR: { desc: "Home Runs", win: highest }
+    SB: { desc: "Stolen Bases", win: highest }
+    BB: { desc: "Walks", win: highest }
+    FPCT: { desc: "Fielding Percentage", win: highest }
+    AVG: { desc: "Batting Average", win: highest }
+    OPS: { desc: "On-base + Slugging Percentage", win: highest }
+  pitcher_categories:
+    W: { desc: "Wins", win: highest }
+    K: { desc: "Strikeouts", win: highest }
+    WHIP: { desc: "(Walks + Hits) / Innings Pitched", win: lowest }
+    K_BB: { desc: "Strikeouts per Walk Ratio", win: highest }
+    SV_H: { desc: "Saves + Holds", win: highest }
+
+roster:
+  positions:
+    - C
+    - 1B
+    - 2B
+    - 3B
+    - SS
+    - OF
+    - OF
+    - OF
+    - Util
+    - Util
+    - SP
+    - SP
+    - RP
+    - RP
+    - P
+    - P
+    - BN
+    - BN
+    - BN
+    - BN
+    - IL
+    - IL
+    - IL
+    - IL
+    - NA
+    - NA
+  bench_slots: 4
+  il_slots: 4
+  na_slots: 2
+  lock_benched_players: false
+  injured_to_il_direct: true
+
+transactions:
+  max_acquisitions_season: null  # No maximum
+  max_acquisitions_per_week: 5
+  max_trades_season: null  # No maximum
+  trade_end_date: "2026-08-06"
+  trade_review: "Commissioner"
+  trade_reject_time_days: 1
+  waiver_time: "No waivers"
+  waiver_type: "Continual rolling list"
+  waiver_mode: "Standard"
+  cant_cut_list_provider: "Yahoo Sports"
+
+pitching:
+  min_innings_pitched_per_week: 21
+
+playoffs:
+  num_teams: 8
+  start_week: 23
+  end_week: 25
+  end_date: "2026-09-20"  # Sunday
+  tiebreaker: "Best regular season record vs opponent wins"
+  reseeding: true
+  lock_eliminated_teams: true
+  seeding: "Division winners awarded top playoff seeds"
+
+schedule:
+  weekly_deadline: "Daily - Today"
+
+visibility:
+  public: false
+  invite_permissions: "Commissioner Only"
+  auto_renew: true

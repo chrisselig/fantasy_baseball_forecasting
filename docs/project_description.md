@@ -1,16 +1,16 @@
 # Fantasy Baseball Intelligence App
-An end-to-end Python platform to manage my Yahoo Fantasy Baseball team and win the league.
+## Project Description
 
-## Overview
+### Overview
 A Python-based fantasy baseball intelligence platform deployed on shinyapps.io that integrates
 with Yahoo Fantasy Sports to deliver daily lineup recommendations, matchup projections, and
 waiver wire intelligence — with a focus on real-time news and minor league call-up tracking.
 
 ---
 
-## Core Modules
+### Core Modules
 
-### 1. Yahoo Fantasy API Integration Layer
+#### 1. Yahoo Fantasy API Integration Layer
 The foundation of the entire application. Handles all authenticated communication with Yahoo's
 Fantasy Sports API and normalizes data into a consistent internal format.
 
@@ -31,7 +31,7 @@ Fantasy Sports API and normalizes data into a consistent internal format.
 
 ---
 
-### 2. Matchup Analyzer
+#### 2. Matchup Analyzer
 Projects the current week's head-to-head category outcomes and generates daily
 actionable recommendations.
 
@@ -55,13 +55,14 @@ actionable recommendations.
 
 ---
 
-### 3. Waiver Wire Intelligence Engine
+#### 3. Waiver Wire Intelligence Engine
 Identifies the highest-value free agents available, with emphasis on recent call-ups
 from the minor leagues and players with improving roles.
 
 **Responsibilities:**
 - Score all available free agents by projected category contribution
-- Compare each player's value to the weakest contributor on the user's roster at the same position
+- Compare each player's value to the weakest contributor on the user's roster
+  at the same position
 - Rank add candidates by net category improvement
 - Flag players with role changes, injuries to players ahead of them on the depth chart,
   or recent promotion from Triple-A / Double-A
@@ -85,7 +86,7 @@ from the minor leagues and players with improving roles.
 
 ---
 
-## Application Architecture
+### Application Architecture
 
 ```
 fantasy_baseball_forecasting/
@@ -115,7 +116,7 @@ fantasy_baseball_forecasting/
 
 ---
 
-## Data Storage: MotherDuck (Cloud DuckDB)
+### Data Storage: MotherDuck (Cloud DuckDB)
 
 All ingested and processed data is persisted in **MotherDuck**, a cloud-hosted DuckDB
 service. This gives the app fast analytical queries, a persistent store across sessions,
@@ -124,9 +125,11 @@ and a clean separation between data ingestion and the Shiny front-end.
 **Connection:** `duckdb.connect("md:fantasy_baseball")` using a MotherDuck token stored
 as an environment variable.
 
-### Schema Design
+---
 
-#### `dim_players`
+#### Schema Design
+
+##### `dim_players`
 Master player reference table. One row per player, updated daily.
 ```sql
 CREATE TABLE dim_players (
@@ -142,7 +145,7 @@ CREATE TABLE dim_players (
 );
 ```
 
-#### `dim_dates`
+##### `dim_dates`
 Date spine used for joins and schedule alignment.
 ```sql
 CREATE TABLE dim_dates (
@@ -154,7 +157,7 @@ CREATE TABLE dim_dates (
 );
 ```
 
-#### `fact_player_stats_daily`
+##### `fact_player_stats_daily`
 One row per player per date. Source of truth for all stat accumulation.
 ```sql
 CREATE TABLE fact_player_stats_daily (
@@ -188,7 +191,7 @@ CREATE TABLE fact_player_stats_daily (
 );
 ```
 
-#### `fact_player_stats_weekly`
+##### `fact_player_stats_weekly`
 Aggregated weekly totals, rebuilt each Sunday. Used for matchup projections.
 ```sql
 CREATE TABLE fact_player_stats_weekly (
@@ -214,7 +217,7 @@ CREATE TABLE fact_player_stats_weekly (
 );
 ```
 
-#### `fact_matchups`
+##### `fact_matchups`
 One row per fantasy matchup (team vs. team, per week).
 ```sql
 CREATE TABLE fact_matchups (
@@ -244,7 +247,7 @@ CREATE TABLE fact_matchups (
 );
 ```
 
-#### `fact_rosters`
+##### `fact_rosters`
 Snapshot of each team's roster by date. Tracks adds/drops/trades over time.
 ```sql
 CREATE TABLE fact_rosters (
@@ -257,7 +260,7 @@ CREATE TABLE fact_rosters (
 );
 ```
 
-#### `fact_transactions`
+##### `fact_transactions`
 Every add, drop, and trade in the league.
 ```sql
 CREATE TABLE fact_transactions (
@@ -272,7 +275,7 @@ CREATE TABLE fact_transactions (
 );
 ```
 
-#### `fact_waiver_scores`
+##### `fact_waiver_scores`
 Daily scoring of free agents by the waiver intelligence engine.
 ```sql
 CREATE TABLE fact_waiver_scores (
@@ -288,7 +291,7 @@ CREATE TABLE fact_waiver_scores (
 );
 ```
 
-#### `fact_projections`
+##### `fact_projections`
 Forward-looking projections by player by week, refreshed daily.
 ```sql
 CREATE TABLE fact_projections (
@@ -315,7 +318,9 @@ CREATE TABLE fact_projections (
 );
 ```
 
-### Data Flow
+---
+
+#### Data Flow
 
 ```
 Yahoo API  ──►  yahoo_client.py  ──►  MotherDuck (fact_rosters, fact_transactions)
@@ -331,7 +336,7 @@ FanGraphs  ──►  projections.py   ──►  MotherDuck (fact_projections)
 
 ---
 
-## Deployment: Shiny for Python on shinyapps.io
+### Deployment: Shiny for Python on shinyapps.io
 
 The app will be built using **Shiny for Python** (`shiny` package) and deployed to
 shinyapps.io via `rsconnect-python`.
@@ -355,7 +360,7 @@ shinyapps.io via `rsconnect-python`.
 
 ---
 
-## External Dependencies
+### External Dependencies
 
 | Purpose | Library / Source |
 |---|---|
@@ -370,7 +375,7 @@ shinyapps.io via `rsconnect-python`.
 
 ---
 
-## Success Criteria
+### Success Criteria
 - Daily lineup card generated before first game each day
 - Matchup win probability updated with live accumulating stats
 - Waiver wire call-up alerts surfaced within 24 hours of promotion
