@@ -399,7 +399,7 @@ def _safe_get(obj: Any, *keys: str | int, default: Any = None) -> Any:
     """Safely navigate a nested dict/list, returning ``default`` if any key is absent."""
     for key in keys:
         if isinstance(obj, dict):
-            obj = obj.get(key, default)  # type: ignore[arg-type]
+            obj = obj.get(key, default)
         elif isinstance(obj, (list, tuple)) and isinstance(key, int):
             try:
                 obj = obj[key]

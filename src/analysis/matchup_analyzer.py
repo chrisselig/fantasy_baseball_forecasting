@@ -231,7 +231,8 @@ def get_focus_categories(scored_df: pd.DataFrame) -> list[str]:
     """
     focus_statuses = {"flippable_win", "toss_up", "flippable_loss"}
     mask = scored_df["status"].isin(focus_statuses)
-    return scored_df.loc[mask, "category"].tolist()
+    result: list[str] = scored_df.loc[mask, "category"].tolist()
+    return result
 
 
 def check_ip_pace(
