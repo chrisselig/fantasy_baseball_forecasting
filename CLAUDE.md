@@ -72,7 +72,7 @@ fantasy_baseball_forecasting/
 
 ## Development Standards
 - **Language:** Python 3.12
-- **Code style:** Follow PEP 8 strictly, use Black for formatting
+- **Code style:** PEP 8, enforced by `ruff format` and `ruff check`
 - **Type hints:** Required for all function signatures and class definitions
 - **Docstrings:** Required for all public functions and classes
 
@@ -80,7 +80,7 @@ fantasy_baseball_forecasting/
 1. Create feature branch: `feature/[short-description]`
 2. Write unit tests for all data processing and analysis functions
 3. Run `pytest` and ensure all tests pass
-4. Run `black .` and `flake8` before committing
+4. Run `ruff format .` and `ruff check .` and `mypy .` before committing
 5. Update `docs/project_description.md` if adding or changing a module
 
 ## Data Handling Standards

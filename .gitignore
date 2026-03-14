@@ -191,6 +191,11 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Yahoo OAuth token files — never commit credentials
+oauth2.json
+*.token
+.env.local
+
 # PyPI configuration file
 .pypirc
 
