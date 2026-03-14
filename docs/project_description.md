@@ -68,10 +68,10 @@ from the minor leagues and players with improving roles.
   or recent promotion from Triple-A / Double-A
 
 **News & call-up data sources:**
-- MLB.com transactions feed (official call-up / option / DFA records)
-- Baseball Reference / FanGraphs recent stats and minor league splits
-- Rotowire / MLB injury reports (scraped or via available APIs)
-- Optional: Baseball Savant Statcast data for early breakout signals
+- MLB Stats API transactions endpoint — official call-up / option / DFA records (free, no auth)
+- MLB Stats API minor league stats endpoint — `sportId=11/12/13/14` for AAA/AA/A+/A splits
+- Baseball Savant (Statcast) via `pybaseball` — exit velocity, barrel rate for breakout signals
+- MLB Stats API injury/IL data — official IL placements (replaces Rotowire, which is paid/ToS restricted)
 
 **Call-up specific logic:**
 - Cross-reference MLB transaction feed with Yahoo free agent pool
@@ -90,12 +90,17 @@ from the minor leagues and players with improving roles.
 
 ```
 fantasy_baseball_forecasting/
+├── .github/
+│   └── workflows/
+│       └── daily_pipeline.yml     # Cron: runs pipeline daily at 9am MT
 ├── config/
 │   └── league_settings.yaml       # League configuration
+├── scripts/
+│   └── yahoo_auth.py              # One-time local OAuth token generator
 ├── src/
 │   ├── api/
 │   │   ├── yahoo_client.py        # Yahoo OAuth + API calls
-│   │   └── mlb_client.py          # MLB transactions, Statcast, news feeds
+│   │   └── mlb_client.py          # MLB Stats API, Statcast, minor league data
 │   ├── db/
 │   │   ├── connection.py          # MotherDuck connection management
 │   │   ├── schema.py              # Table creation and migrations
@@ -104,12 +109,15 @@ fantasy_baseball_forecasting/
 │   │   ├── matchup_analyzer.py    # Category projection and win probability
 │   │   ├── waiver_ranker.py       # Free agent scoring and ranking
 │   │   └── lineup_optimizer.py    # Daily lineup + add/drop recommendations
+│   ├── pipeline/
+│   │   └── daily_run.py           # GitHub Actions entry point — orchestrates full pipeline
 │   └── app/
 │       ├── app.py                 # Shiny for Python app entry point
 │       ├── ui.py                  # UI layout and components
-│       └── server.py              # Reactive server logic
+│       ├── server.py              # Reactive server logic (read-only from MotherDuck)
+│       └── stubs.py               # Mock data for development and offline fallback
+├── tests/
 ├── docs/
-│   └── project_description.md
 ├── requirements.txt
 └── README.md
 ```
@@ -323,15 +331,21 @@ CREATE TABLE fact_projections (
 #### Data Flow
 
 ```
-Yahoo API  ──►  yahoo_client.py  ──►  MotherDuck (fact_rosters, fact_transactions)
-MLB API    ──►  mlb_client.py    ──►  MotherDuck (dim_players, fact_player_stats_daily)
-FanGraphs  ──►  projections.py   ──►  MotherDuck (fact_projections)
-                                            │
-                                            ▼
-                              analysis/ modules query MotherDuck
-                                            │
-                                            ▼
-                                    Shiny app renders results
+GitHub Actions (cron 9am MT)
+       │
+       ├── Yahoo API  ──►  yahoo_client.py  ──►  MotherDuck (fact_rosters, fact_transactions, fact_matchups)
+       ├── MLB API    ──►  mlb_client.py    ──►  MotherDuck (dim_players, fact_player_stats_daily)
+       ├── Statcast   ──►  mlb_client.py    ──►  MotherDuck (fact_player_stats_daily)
+       └── FanGraphs* ──►  mlb_client.py    ──►  MotherDuck (fact_projections)
+                                                        │
+                                             analysis/ modules run in Actions
+                                             write daily_report to MotherDuck
+                                                        │
+                                          shinyapps.io reads MotherDuck (read-only)
+                                                        │
+                                                 Shiny app renders
+
+* FanGraphs projection pull has tiered fallback — see development plan
 ```
 
 ---
@@ -339,12 +353,15 @@ FanGraphs  ──►  projections.py   ──►  MotherDuck (fact_projections)
 ### Deployment: Shiny for Python on shinyapps.io
 
 The app will be built using **Shiny for Python** (`shiny` package) and deployed to
-shinyapps.io via `rsconnect-python`.
+shinyapps.io via `rsconnect-python`. The app is **read-only** — it only reads from
+MotherDuck. All data collection and analysis runs in GitHub Actions.
 
 **Daily refresh strategy:**
-- App triggers a data refresh on first load each day (or on a schedule via a background task)
-- Yahoo API token stored as an environment variable / secret on shinyapps.io
-- Cached data stored between sessions to minimize API calls
+- GitHub Actions cron job runs at 9am MT, writes pre-built daily report to MotherDuck
+- App reads the report on load — no API calls, no scheduling, fast cold start
+- Only `MOTHERDUCK_TOKEN` is needed as an environment variable on shinyapps.io
+- Yahoo credentials live exclusively in GitHub Secrets
+- Plan for Starter plan ($9/month) — the free tier's 25 active hours won't cover a full season
 
 **Key UI views:**
 1. **Dashboard** — Daily command center:
@@ -362,16 +379,16 @@ shinyapps.io via `rsconnect-python`.
 
 ### External Dependencies
 
-| Purpose | Library / Source |
-|---|---|
-| Yahoo API auth | `yahoo_oauth`, `requests` |
-| Data manipulation | `pandas`, `numpy` |
-| MLB transactions / news | `requests`, `beautifulsoup4` |
-| Statcast data | `pybaseball` |
-| Shiny app framework | `shiny` (Shiny for Python) |
-| Deployment | `rsconnect-python` |
-| Scheduling / caching | `apscheduler`, `diskcache` |
-| Data warehouse | `duckdb` + MotherDuck cloud |
+| Purpose | Library / Source | Cost |
+|---|---|---|
+| Yahoo API auth | `yahoo_oauth`, `requests` | Free (credentials obtained) |
+| Data manipulation | `pandas`, `numpy` | Free |
+| MLB Stats API (stats, transactions, MiLB, IL) | `requests` | Free, public, no auth |
+| Statcast / FanGraphs projections | `pybaseball` | Free (FanGraphs fallback if blocked) |
+| Shiny app framework | `shiny` (Shiny for Python) | Free |
+| Deployment | `rsconnect-python` → shinyapps.io | $9/month (Starter plan) |
+| Pipeline scheduling | GitHub Actions (cron) | Free (public repo) |
+| Data warehouse | `duckdb` + MotherDuck cloud | Free tier (10GB, sufficient) |
 
 ---
 

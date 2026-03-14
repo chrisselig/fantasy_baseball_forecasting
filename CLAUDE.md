@@ -20,18 +20,24 @@ League settings: `config/league_settings.yaml`
 - **Data warehouse:** MotherDuck (cloud DuckDB) — connect via `duckdb.connect("md:fantasy_baseball")`
 - **App framework:** Shiny for Python (`shiny`)
 - **Deployment:** shinyapps.io via `rsconnect-python`
-- **Core packages:** `yahoo_oauth`, `requests`, `pandas`, `numpy`, `duckdb`, `pybaseball`, `beautifulsoup4`, `shiny`, `apscheduler`
+- **Core packages:** `yahoo_oauth`, `requests`, `pandas`, `numpy`, `duckdb`, `pybaseball`, `shiny`
+- **Pipeline scheduling:** GitHub Actions (cron) — not APScheduler; the app is read-only on shinyapps.io
 
 ## Project Structure
 
 ```
 fantasy_baseball_forecasting/
+├── .github/
+│   └── workflows/
+│       └── daily_pipeline.yml     # Cron pipeline: runs daily at 9am MT
 ├── config/
 │   └── league_settings.yaml       # League configuration (scoring, roster, schedule)
+├── scripts/
+│   └── yahoo_auth.py              # One-time local OAuth token generator
 ├── src/
 │   ├── api/
 │   │   ├── yahoo_client.py        # Yahoo OAuth + API calls
-│   │   └── mlb_client.py          # MLB transactions, Statcast, news feeds
+│   │   └── mlb_client.py          # MLB Stats API, Statcast, minor league data
 │   ├── db/
 │   │   ├── connection.py          # MotherDuck connection management
 │   │   ├── schema.py              # Table creation and migrations
@@ -40,10 +46,13 @@ fantasy_baseball_forecasting/
 │   │   ├── matchup_analyzer.py    # Category projection and win probability
 │   │   ├── waiver_ranker.py       # Free agent scoring and ranking
 │   │   └── lineup_optimizer.py    # Daily lineup + add/drop recommendations
+│   ├── pipeline/
+│   │   └── daily_run.py           # GitHub Actions entry point
 │   └── app/
 │       ├── app.py                 # Shiny for Python app entry point
 │       ├── ui.py                  # UI layout and components
-│       └── server.py              # Reactive server logic
+│       ├── server.py              # Reactive server logic (read-only from MotherDuck)
+│       └── stubs.py               # Mock data for dev/offline fallback
 ├── tests/                         # Unit and integration tests
 ├── docs/
 │   └── project_description.md    # Full project description and schema design
@@ -82,10 +91,10 @@ fantasy_baseball_forecasting/
 - Rate limit Yahoo API calls; use local cache for within-session repeated reads
 
 ## Dependencies
-- **API / data:** `yahoo_oauth`, `requests`, `beautifulsoup4`, `pybaseball`
+- **API / data:** `yahoo_oauth`, `requests`, `pybaseball`
 - **Data processing:** `pandas`, `numpy`
 - **Database:** `duckdb`
 - **App / deployment:** `shiny`, `rsconnect-python`
-- **Scheduling:** `apscheduler`
+- **Pipeline scheduling:** GitHub Actions (no APScheduler — app is read-only)
 - **Testing:** `pytest`, `pytest-cov`
-- **Formatting / linting:** `black`, `flake8`
+- **Formatting / linting:** `ruff`, `mypy`

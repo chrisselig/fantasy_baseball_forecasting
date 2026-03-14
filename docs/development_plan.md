@@ -13,9 +13,37 @@ using git worktrees and subagents.
 
 ---
 
-## Dependency Map
+## Architecture: GitHub Actions as the Data Pipeline
 
-Understanding what depends on what drives the entire plan.
+The Shiny app on shinyapps.io is **read-only**. It never calls Yahoo or MLB APIs directly.
+All data collection and analysis runs in GitHub Actions on a daily cron schedule and writes
+results to MotherDuck. The app simply reads the pre-built report from MotherDuck on load.
+
+This solves three problems at once:
+- shinyapps.io instances sleep when idle — APScheduler won't fire on a sleeping instance
+- API credentials (Yahoo OAuth tokens) stay in GitHub Secrets, not on shinyapps.io
+- App cold-start is fast because the daily report is already computed before you open it
+
+```
+GitHub Actions (cron: daily 9am MT)
+       │
+       ├── yahoo_client.py   → fact_rosters, fact_transactions, fact_matchups
+       ├── mlb_client.py     → dim_players, fact_player_stats_daily, callups
+       ├── projections.py    → fact_projections
+       │
+       ├── matchup_analyzer  → score_categories()
+       ├── waiver_ranker     → rank_free_agents()
+       ├── lineup_optimizer  → build_daily_report()
+       │
+       └── writes daily_report → MotherDuck
+                                      │
+                              shinyapps.io reads
+                              MotherDuck (read-only)
+                                      │
+                               Shiny app renders
+```
+
+## Dependency Map
 
 ```
 [Project Scaffold]
@@ -37,7 +65,7 @@ Understanding what depends on what drives the entire plan.
                             │                    │
                             └──────────┬──────────┘
                                        ▼
-                              [Integration + Wiring]
+                        [GitHub Actions Pipeline wiring]
                                        │
                                        ▼
                                   [Deployment]
@@ -61,6 +89,7 @@ Set up the Python project structure per `CLAUDE.md`.
 - Create `.venv` and install all dependencies
 - Create all `src/` subdirectories with `__init__.py` files
 - Create `tests/` directory structure mirroring `src/`
+- Create `.github/workflows/daily_pipeline.yml` skeleton (cron trigger, secrets references)
 - Create `.env.example` documenting all required environment variables
 - Configure `ruff`, `mypy`, and `pytest` in `pyproject.toml`
 - Verify `ruff format .`, `ruff check .`, `mypy .`, `pytest` all pass on empty project
@@ -138,12 +167,22 @@ It does not implement any analysis logic — it only fetches and normalizes data
 
 #### A.1 OAuth Authentication (`src/api/yahoo_client.py`)
 
+Yahoo client ID and secret are already obtained. The initial OAuth flow must be run
+locally (requires browser redirect) to generate the access and refresh tokens. These
+tokens are then stored in GitHub Secrets and used by the Actions pipeline — they are
+never needed on shinyapps.io.
+
 - Implement `YahooClient` class initialized with `consumer_key`, `consumer_secret`,
   `access_token`, `refresh_token` from environment variables
-- Implement `_refresh_token_if_needed()` — called before every request
+- Implement `_refresh_token_if_needed()` — called before every request; Yahoo access
+  tokens expire after 1 hour, refresh tokens last much longer
+- Implement `get_connection() -> YahooClient` — reads all four values from env, raises
+  a clear `EnvironmentError` if any are missing
 - Implement `_get(endpoint: str) -> dict` — base authenticated GET with error handling
 - Raise `YahooAuthError` on 401/403, `YahooAPIError` on other failures
 - Log all request URLs at DEBUG, response status codes at INFO
+- **First task before any other Yahoo work:** run the one-time local auth script to
+  generate and verify tokens work against the real league (ID: 87941)
 
 #### A.2 Data Fetch Methods
 
@@ -198,21 +237,39 @@ call-up/transaction tracking, and projection ingestion.
 #### B.2 Statcast / pybaseball Integration
 
 - Implement `get_batter_stats(start_date, end_date) -> pd.DataFrame`
-  - Source: `pybaseball.batting_stats()` or `pybaseball.statcast_batter()`
+  - Source: `pybaseball.batting_stats()` (FanGraphs-backed, season-level)
+  - For daily granularity: `pybaseball.statcast()` filtered by batter
   - Normalize to `fact_player_stats_daily` columns
+  - Cache all pybaseball results in MotherDuck — pybaseball calls are slow and rate-limited
 - Implement `get_pitcher_stats(start_date, end_date) -> pd.DataFrame`
-  - Source: `pybaseball.pitching_stats()`
+  - Source: `pybaseball.pitching_stats()` for season stats
+  - For daily: MLB Stats API `/people/{id}/stats?stats=gameLog` (official, reliable)
   - Normalize to `fact_player_stats_daily` columns (IP, W, K, BB, H, SV, HLD)
 - Implement `get_minor_league_stats(mlb_id: int) -> pd.DataFrame`
-  - Source: `pybaseball.amateur_draft()` or MLB Stats API minor league splits
-  - Used to evaluate call-up quality: AVG, HR, K%, BB% at Triple-A
+  - Source: MLB Stats API `/people/{id}/stats?stats=season&sportId=11` (sportId 11=AAA,
+    12=AA, 13=A+, 14=A) — this is the correct endpoint, NOT pybaseball
+  - Used to evaluate call-up quality: AVG, HR, K%, BB% at most recent MiLB level
 
 #### B.3 Projections Ingestion
 
+**Note:** FanGraphs scraping via pybaseball is fragile and may violate ToS. Use the
+following strategy in priority order:
+
+1. **Primary:** `pybaseball.fg_batting_projections()` / `pybaseball.fg_pitching_projections()`
+   - These pull Steamer projections from FanGraphs public pages
+   - Cache immediately in MotherDuck on first successful pull for the season
+   - If FanGraphs blocks the request, fall back to option 2
+2. **Fallback:** Baseball Savant's publically available depth chart projections
+   - `pybaseball.statcast_batter_exitvelo_barrels()` for Statcast-based estimates
+3. **Last resort:** derive simple projections from trailing 30-day stats in MotherDuck
+
 - Implement `get_steamer_projections(season: int) -> pd.DataFrame`
-  - Source: `pybaseball.fg_batting_projections()` / `pybaseball.fg_pitching_projections()`
-  - Normalize to `fact_projections` columns, set `source = "steamer"`
+  - Attempt FanGraphs pull; on failure log warning and use cached or fallback
+  - Normalize to `fact_projections` columns, set `source = "steamer"` or `"fallback"`
 - Map FanGraphs player IDs to Yahoo player IDs via `dim_players.mlb_id`
+- **Important:** FanGraphs uses their own integer IDs (fgid), MLB Stats API uses MLBAM IDs.
+  `pybaseball` has a `playerid_lookup()` function that maps between them — use this to
+  build the ID crosswalk during the first load.
 
 #### B.4 MLB Loaders (`src/db/loaders.py` — MLB section)
 
@@ -444,11 +501,54 @@ lineup_optimizer.build_daily_report()
 Shiny server reactive calcs
 ```
 
-### 3.2 Daily Refresh Scheduler
+### 3.2 GitHub Actions Daily Pipeline
 
-- Implement a daily data refresh that runs on app startup if data is stale
-- Use `apscheduler` to schedule: stats refresh at 10am, projections at 8am
-- Log all refresh events to MotherDuck (optional: `fact_refresh_log` table)
+Replace APScheduler entirely with a GitHub Actions cron workflow. shinyapps.io instances
+sleep when idle — any in-process scheduler will miss its triggers. GitHub Actions runs
+independently of the app on a reliable schedule.
+
+Create `.github/workflows/daily_pipeline.yml`:
+
+```yaml
+name: Daily Fantasy Baseball Pipeline
+
+on:
+  schedule:
+    - cron: '0 15 * * *'  # 9am MT (UTC-6) every day during season
+  workflow_dispatch:        # allow manual trigger any time
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m src.pipeline.daily_run
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          YAHOO_CONSUMER_KEY: ${{ secrets.YAHOO_CONSUMER_KEY }}
+          YAHOO_CONSUMER_SECRET: ${{ secrets.YAHOO_CONSUMER_SECRET }}
+          YAHOO_ACCESS_TOKEN: ${{ secrets.YAHOO_ACCESS_TOKEN }}
+          YAHOO_REFRESH_TOKEN: ${{ secrets.YAHOO_REFRESH_TOKEN }}
+```
+
+Create `src/pipeline/daily_run.py` — the pipeline entry point:
+1. Fetch Yahoo roster, matchup, transactions → write to MotherDuck
+2. Fetch MLB daily stats → write to MotherDuck
+3. Fetch/refresh projections (weekly, not daily) → write to MotherDuck
+4. Run matchup_analyzer, waiver_ranker, lineup_optimizer
+5. Write `daily_report` output to MotherDuck `fact_daily_reports` table
+6. Log run metadata (timestamp, rows written, errors) to MotherDuck
+
+**GitHub Secrets required:**
+- `MOTHERDUCK_TOKEN`
+- `YAHOO_CONSUMER_KEY`, `YAHOO_CONSUMER_SECRET`
+- `YAHOO_ACCESS_TOKEN`, `YAHOO_REFRESH_TOKEN`
+
+The Shiny app on shinyapps.io only needs `MOTHERDUCK_TOKEN` — no Yahoo credentials there.
 
 ### 3.3 Player ID Mapping
 
@@ -472,23 +572,34 @@ Write `tests/integration/test_pipeline.py`:
 ## Phase 4 — Deployment
 ### One-time setup + ongoing
 
-### 4.1 shinyapps.io Configuration
+### 4.1 Yahoo OAuth Token — One-Time Local Setup
 
-- Set all environment variables via shinyapps.io dashboard:
-  - `MOTHERDUCK_TOKEN`
-  - `YAHOO_CONSUMER_KEY`, `YAHOO_CONSUMER_SECRET`
-  - `YAHOO_ACCESS_TOKEN`, `YAHOO_REFRESH_TOKEN`
-- Generate Yahoo OAuth tokens locally first (requires browser), upload to shinyapps.io
+This must be done before any pipeline work. Yahoo OAuth requires a browser redirect
+on first auth, which can only happen locally.
+
+```bash
+# Run once locally to generate tokens
+python scripts/yahoo_auth.py
+```
+
+`scripts/yahoo_auth.py` will:
+1. Read `YAHOO_CONSUMER_KEY` and `YAHOO_CONSUMER_SECRET` from `.env`
+2. Open a browser for Yahoo login + authorize
+3. Write `access_token` and `refresh_token` to stdout (do not write to file)
+4. Store all four values in GitHub Secrets manually
+
+Tokens then live in GitHub Secrets and are passed to the Actions pipeline via env vars.
+The pipeline refreshes the access token automatically on every run (1-hour expiry).
+**shinyapps.io never needs Yahoo credentials.**
+
+### 4.2 shinyapps.io Configuration
+
+shinyapps.io only needs one secret — MotherDuck. The app is read-only.
+
+- Set environment variable via shinyapps.io dashboard: `MOTHERDUCK_TOKEN` only
 - Run `/deploy` command checklist before every production push
-
-### 4.2 Yahoo OAuth Token Strategy
-
-Yahoo OAuth requires a browser redirect on first auth. On shinyapps.io there is no browser.
-Solution:
-1. Authenticate locally using `yahoo_oauth` — this creates a token JSON file
-2. Upload token values as environment variables to shinyapps.io
-3. App reconstructs the OAuth session from env vars at startup
-4. Refresh tokens automatically on every request (Yahoo access tokens expire in 1 hour)
+- Upgrade to Starter plan ($9/month) — the free tier's 25 active hours/month will not
+  last a 6-month baseball season
 
 ### 4.3 Monitoring
 
@@ -586,9 +697,13 @@ recommended_drop_id, notes
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Yahoo OAuth token management on shinyapps.io | High | Pre-generate token locally, store as env vars, auto-refresh on every request |
-| Player ID mismatch (Yahoo ↔ MLB ↔ FanGraphs) | High | Build ID mapping table early in integration phase; log unmatched players |
-| `pybaseball` rate limiting / instability | Medium | Add retry logic with exponential backoff; cache all responses in MotherDuck |
-| Rate stat projection math errors (AVG, WHIP) | Medium | Use component-level accumulation (numerator/denominator), not simple averages of averages |
-| shinyapps.io free tier cold start latency | Medium | Pre-cache daily report in MotherDuck; app reads cache on load, refreshes in background |
-| Yahoo API changes mid-season | Low | Isolate all Yahoo calls in `yahoo_client.py`; easy to patch in one place |
+| Player ID mismatch (Yahoo ↔ MLB ↔ FanGraphs) | High | Use `pybaseball.playerid_lookup()` to build crosswalk on first load; log unmatched players for manual review |
+| FanGraphs projection scraping blocked | High | Cache on first successful pull; tiered fallback to Statcast estimates then trailing-30-day stats |
+| Yahoo access token expiry in GitHub Actions | Medium | Pipeline refreshes token on every run; write updated refresh token back to GitHub Secrets via API call |
+| Rate stat projection math errors (AVG, WHIP) | Medium | Accumulate numerator/denominator separately (H+proj_H)/(AB+proj_AB) — never average rates directly |
+| MLB Stats API (unofficial) endpoint changes | Medium | Pin endpoint URLs; monitor `python-mlb-statsapi` community library for breakage notices |
+| Minor league stats gaps for newly called-up players | Medium | Fall back to MiLB.com stats or flag player as "limited data"; never block the pipeline on missing MiLB stats |
+| shinyapps.io free tier exhaustion | Medium | Upgrade to Starter ($9/month) before season starts; app is read-only/fast so sessions are short |
+| GitHub Actions cron drift (UTC vs MT) | Low | Set cron in UTC with comment noting MT equivalent; recheck at DST changeovers (Mar, Nov) |
+| Yahoo API changes mid-season | Low | All Yahoo calls isolated in `yahoo_client.py`; one file to patch |
+| Rotowire / third-party news sources | Resolved | Replaced with MLB Stats API for official IL/injury data — free, no ToS risk |
