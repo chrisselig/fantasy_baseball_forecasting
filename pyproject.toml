@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fantasy-baseball-forecasting"
+version = "0.1.0"
+description = "Fantasy baseball intelligence platform for The Vlad Guerrero Invitational"
+requires-python = ">=3.12"
+dependencies = [
+    # Database
+    "duckdb>=1.1.0",
+    # Data
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    # Config
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    # API clients (pipeline only — not loaded by Shiny app)
+    "requests>=2.31.0",
+    "yahoo-oauth>=1.0.0",
+    "pybaseball>=2.2.7",
+    # Shiny app
+    "shiny>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.14",
+    "responses>=0.25",       # HTTP response mocking for API tests
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6.0",
+    "types-requests>=2.31",
+    "rsconnect-python>=1.22.0",  # shinyapps.io deployment tool
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+# ── pytest ────────────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=src --cov-report=term-missing"
+
+# ── ruff ─────────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    "E501",  # line too long — ruff format handles this
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+# ── mypy ─────────────────────────────────────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+# Third-party packages without stubs — suppress missing import errors
+[[tool.mypy.overrides]]
+module = [
+    "pybaseball.*",
+    "yahoo_oauth.*",
+    "shiny.*",
+    "rsconnect.*",
+]
+ignore_missing_imports = true
+
+# ── coverage ─────────────────────────────────────────────────────────────────
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/app/stubs.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
