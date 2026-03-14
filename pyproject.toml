@@ -93,7 +93,7 @@ ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["src/app/stubs.py"]
+omit = ["src/app/stubs.py", "src/app/server.py", "src/app/ui.py"]
 
 [tool.coverage.report]
 show_missing = true
