@@ -1,0 +1,48 @@
+name: Deploy Shiny App
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/app/**'
+      - 'src/db/**'
+      - 'src/analysis/**'
+      - 'src/config.py'
+      - 'config/**'
+      - 'requirements.txt'
+      - '.github/workflows/deploy_app.yml'
+  workflow_dispatch:  # allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install deployment dependencies
+        run: pip install rsconnect-python
+
+      - name: Deploy to shinyapps.io
+        env:
+          SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
+          SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
+          SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
+        run: |
+          rsconnect deploy shiny . \
+            --title "Fantasy Baseball Dashboard" \
+            --entrypoint src/app/app.py
+
+# ── GitHub Secrets required ───────────────────────────────────────────────────
+# SHINYAPPS_ACCOUNT  — shinyapps.io account name (e.g. chris-selig)
+# SHINYAPPS_TOKEN    — shinyapps.io token (from shinyapps.io → Account → Tokens)
+# SHINYAPPS_SECRET   — shinyapps.io token secret
+#
+# Add these at: github.com/<owner>/<repo>/settings/secrets/actions

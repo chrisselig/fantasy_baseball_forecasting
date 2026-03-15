@@ -63,6 +63,7 @@ from src.db.loaders_yahoo import (
 from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
+    FACT_MATCHUPS,
     FACT_PIPELINE_RUNS,
     FACT_PROJECTIONS,
     FACT_ROSTERS,
@@ -662,7 +663,7 @@ def _query_opponent_team_key(
                     WHEN team_id_home = ? THEN team_id_away
                     ELSE team_id_home
                 END AS opponent_key
-            FROM {FACT_ROSTERS}
+            FROM {FACT_MATCHUPS}
             WHERE (team_id_home = ? OR team_id_away = ?)
               AND week_number = ?
               AND season = ?
