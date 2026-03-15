@@ -96,7 +96,9 @@ class LeagueSettings:
     trade_end_date: datetime.date
     playoff_start_week: int
     playoff_end_week: int
-    my_team_key: str = ""  # Yahoo team key e.g. "422.l.87941.t.3"; empty until after draft
+    my_team_key: str = (
+        ""  # Yahoo team key e.g. "422.l.87941.t.3"; empty until after draft
+    )
 
     # ── Computed properties ───────────────────────────────────────────────────
 

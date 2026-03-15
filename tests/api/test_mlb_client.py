@@ -430,12 +430,11 @@ class TestGetBatterStats:
         """Returns empty DataFrame with correct columns when pybaseball fails."""
         import sys
         import types
+
         broken = types.ModuleType("pybaseball")
         broken.batting_stats = MagicMock(side_effect=Exception("Connection error"))  # type: ignore[attr-defined]
         with patch.dict(sys.modules, {"pybaseball": broken}):
-            df = get_batter_stats(
-                datetime.date(2026, 4, 1), datetime.date(2026, 4, 7)
-            )
+            df = get_batter_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
 
         # Should return empty with correct columns
         assert list(df.columns) == [
@@ -539,6 +538,7 @@ def _patched_import_batting_fail(name: str, *args: Any, **kwargs: Any) -> Any:
         mock.batting_stats.side_effect = Exception("pybaseball failure")
         return mock
     import builtins
+
     return builtins.__import__(name, *args, **kwargs)
 
 

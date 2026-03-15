@@ -842,9 +842,7 @@ def _parse_transactions_response(data: dict[str, Any], days: int) -> pd.DataFram
                 continue
 
             if transaction_id and player_key:
-                txn_dt = datetime.fromtimestamp(
-                    timestamp_val, tz=UTC
-                ).isoformat()
+                txn_dt = datetime.fromtimestamp(timestamp_val, tz=UTC).isoformat()
                 rows.append(
                     {
                         "transaction_id": transaction_id,
