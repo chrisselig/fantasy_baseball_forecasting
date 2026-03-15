@@ -1,0 +1,12 @@
+{
+    "https://api.shinyapps.io": {
+        "server_url": "https://api.shinyapps.io",
+        "filename": "/home/doopdeep/00_data_projects/fantasy_baseball_forecasting",
+        "app_url": "https://chris-selig.shinyapps.io/fantasy_baseball_dashboard/",
+        "app_id": "16904408",
+        "app_guid": null,
+        "title": "Fantasy Baseball Dashboard",
+        "app_mode": "python-shiny",
+        "app_store_version": 1
+    }
+}
