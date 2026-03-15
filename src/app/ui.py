@@ -132,4 +132,5 @@ app_ui = ui.page_navbar(
     ),
     title="Fantasy Baseball Intelligence",
     id="main_navbar",
+    header=ui.output_ui("data_status_banner"),
 )

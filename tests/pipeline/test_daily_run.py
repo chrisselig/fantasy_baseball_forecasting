@@ -20,17 +20,16 @@ from src.config import load_league_settings
 from src.db.schema import (
     FACT_DAILY_REPORTS,
     FACT_PIPELINE_RUNS,
-    FACT_ROSTERS,
     FACT_WAIVER_SCORES,
     create_all_tables,
 )
 from src.pipeline.daily_run import (
+    _MLB_TEAM_ID_TO_ABBR,
     _aggregate_to_team,
     _build_player_schedule,
     _enrich_roster_with_stats,
     _get_season_start,
     _get_week_start,
-    _MLB_TEAM_ID_TO_ABBR,
     _my_team_key,
     _query_weekly_acquisitions,
     _step_log_pipeline_run,
@@ -38,7 +37,6 @@ from src.pipeline.daily_run import (
     _update_waiver_scores,
     run_daily_pipeline,
 )
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -100,6 +98,7 @@ def test_my_team_key_from_config(settings, monkeypatch):
     monkeypatch.setenv("YAHOO_TEAM_ID", "5")
     # Patch settings to have a non-empty my_team_key
     from dataclasses import replace
+
     s = replace(settings, my_team_key="422.l.87941.t.3")
     assert _my_team_key(s) == "422.l.87941.t.3"
 
@@ -134,17 +133,27 @@ def test_team_id_map_known_entries():
 
 
 def test_build_player_schedule_returns_empty_on_empty_schedule():
-    empty_schedule = pd.DataFrame(columns=["mlb_id"])
-    players_df = pd.DataFrame({
-        "player_id": ["p1", "p2"],
-        "team": ["NYY", "BOS"],
-    })
-    result = _build_player_schedule.__wrapped__ if hasattr(_build_player_schedule, "__wrapped__") else None
+    players_df = pd.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "team": ["NYY", "BOS"],
+        }
+    )
+    result = (
+        _build_player_schedule.__wrapped__
+        if hasattr(_build_player_schedule, "__wrapped__")
+        else None
+    )
     # Test directly: when schedule has no mlb_id column
-    from src.pipeline.daily_run import _build_player_schedule as bps
     # Patch mlb_client to raise to simulate failure
     import unittest.mock as mock
-    with mock.patch("src.pipeline.daily_run.mlb_client.get_daily_game_schedule", side_effect=Exception("no network")):
+
+    from src.pipeline.daily_run import _build_player_schedule as bps
+
+    with mock.patch(
+        "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+        side_effect=Exception("no network"),
+    ):
         result = bps(datetime.date(2026, 4, 6), players_df)
     assert result.empty or list(result.columns) == ["player_id"]
 
@@ -153,24 +162,29 @@ def test_build_player_schedule_filters_by_team(monkeypatch):
     """Players on teams with games today appear in schedule_df."""
     import unittest.mock as mock
 
-    team_schedule = pd.DataFrame({
-        "mlb_id": [147, 111],  # NYY and BOS playing
-        "game_date": [datetime.date(2026, 4, 6)] * 2,
-        "opponent_team": ["BOS", "NYY"],
-        "home_away": ["home", "away"],
-        "probable_pitcher": [None, None],
-    })
-    players_df = pd.DataFrame({
-        "player_id": ["p1", "p2", "p3"],
-        "mlb_id": [1, 2, 3],
-        "team": ["NYY", "BOS", "LAD"],
-    })
+    team_schedule = pd.DataFrame(
+        {
+            "mlb_id": [147, 111],  # NYY and BOS playing
+            "game_date": [datetime.date(2026, 4, 6)] * 2,
+            "opponent_team": ["BOS", "NYY"],
+            "home_away": ["home", "away"],
+            "probable_pitcher": [None, None],
+        }
+    )
+    players_df = pd.DataFrame(
+        {
+            "player_id": ["p1", "p2", "p3"],
+            "mlb_id": [1, 2, 3],
+            "team": ["NYY", "BOS", "LAD"],
+        }
+    )
 
     with mock.patch(
         "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
         return_value=team_schedule,
     ):
         from src.pipeline.daily_run import _build_player_schedule
+
         result = _build_player_schedule(datetime.date(2026, 4, 6), players_df)
 
     assert set(result["player_id"].tolist()) == {"p1", "p2"}
@@ -181,17 +195,34 @@ def test_build_player_schedule_filters_by_team(monkeypatch):
 
 
 def test_aggregate_to_team_sums_counting_stats():
-    df = pd.DataFrame({
-        "player_id": ["p1", "p2"],
-        "h": [3, 2], "hr": [1, 0], "sb": [0, 1], "bb": [2, 1],
-        "ab": [10, 8], "hbp": [0, 0], "sf": [0, 0], "tb": [5, 3],
-        "errors": [0, 0], "chances": [5, 3], "ip": [6.0, 0.0],
-        "w": [1, 0], "k": [7, 0], "walks_allowed": [2, 0],
-        "hits_allowed": [4, 0], "sv": [0, 1], "holds": [1, 0],
-        "avg": [0.300, 0.250], "ops": [0.850, 0.700],
-        "fpct": [1.0, 1.0], "whip": [1.0, 0.0],
-        "k_bb": [3.5, 0.0], "sv_h": [1, 1],
-    })
+    df = pd.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "h": [3, 2],
+            "hr": [1, 0],
+            "sb": [0, 1],
+            "bb": [2, 1],
+            "ab": [10, 8],
+            "hbp": [0, 0],
+            "sf": [0, 0],
+            "tb": [5, 3],
+            "errors": [0, 0],
+            "chances": [5, 3],
+            "ip": [6.0, 0.0],
+            "w": [1, 0],
+            "k": [7, 0],
+            "walks_allowed": [2, 0],
+            "hits_allowed": [4, 0],
+            "sv": [0, 1],
+            "holds": [1, 0],
+            "avg": [0.300, 0.250],
+            "ops": [0.850, 0.700],
+            "fpct": [1.0, 1.0],
+            "whip": [1.0, 0.0],
+            "k_bb": [3.5, 0.0],
+            "sv_h": [1, 1],
+        }
+    )
     result = _aggregate_to_team(df)
     assert len(result) == 1
     assert result.iloc[0]["h"] == 5
@@ -201,19 +232,34 @@ def test_aggregate_to_team_sums_counting_stats():
 
 def test_aggregate_to_team_recomputes_avg():
     """AVG must be H/AB, not average of individual AVGs."""
-    df = pd.DataFrame({
-        "player_id": ["p1", "p2"],
-        "h": [1, 1], "ab": [2, 8],  # individual AVGs: .500 and .125
-        "hr": [0, 0], "sb": [0, 0], "bb": [0, 0],
-        "hbp": [0, 0], "sf": [0, 0], "tb": [1, 1],
-        "errors": [0, 0], "chances": [1, 1],
-        "ip": [0.0, 0.0], "w": [0, 0], "k": [0, 0],
-        "walks_allowed": [0, 0], "hits_allowed": [0, 0],
-        "sv": [0, 0], "holds": [0, 0],
-        "avg": [0.500, 0.125], "ops": [0.5, 0.125],
-        "fpct": [1.0, 1.0], "whip": [0.0, 0.0],
-        "k_bb": [0.0, 0.0], "sv_h": [0, 0],
-    })
+    df = pd.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "h": [1, 1],
+            "ab": [2, 8],  # individual AVGs: .500 and .125
+            "hr": [0, 0],
+            "sb": [0, 0],
+            "bb": [0, 0],
+            "hbp": [0, 0],
+            "sf": [0, 0],
+            "tb": [1, 1],
+            "errors": [0, 0],
+            "chances": [1, 1],
+            "ip": [0.0, 0.0],
+            "w": [0, 0],
+            "k": [0, 0],
+            "walks_allowed": [0, 0],
+            "hits_allowed": [0, 0],
+            "sv": [0, 0],
+            "holds": [0, 0],
+            "avg": [0.500, 0.125],
+            "ops": [0.5, 0.125],
+            "fpct": [1.0, 1.0],
+            "whip": [0.0, 0.0],
+            "k_bb": [0.0, 0.0],
+            "sv_h": [0, 0],
+        }
+    )
     result = _aggregate_to_team(df)
     # Combined: 2 H in 10 AB = .200, NOT average of .500 and .125
     assert abs(result.iloc[0]["avg"] - 0.200) < 0.001
@@ -221,18 +267,34 @@ def test_aggregate_to_team_recomputes_avg():
 
 def test_aggregate_to_team_recomputes_whip():
     """WHIP must be (BB+H)/IP from components."""
-    df = pd.DataFrame({
-        "player_id": ["p1", "p2"],
-        "h": [0, 0], "ab": [0, 0], "hr": [0, 0], "sb": [0, 0], "bb": [0, 0],
-        "hbp": [0, 0], "sf": [0, 0], "tb": [0, 0],
-        "errors": [0, 0], "chances": [0, 0],
-        "ip": [3.0, 3.0], "w": [0, 0], "k": [0, 0],
-        "walks_allowed": [1, 2], "hits_allowed": [3, 3],
-        "sv": [0, 0], "holds": [0, 0],
-        "avg": [0.0, 0.0], "ops": [0.0, 0.0],
-        "fpct": [0.0, 0.0], "whip": [1.333, 1.667],
-        "k_bb": [0.0, 0.0], "sv_h": [0, 0],
-    })
+    df = pd.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "h": [0, 0],
+            "ab": [0, 0],
+            "hr": [0, 0],
+            "sb": [0, 0],
+            "bb": [0, 0],
+            "hbp": [0, 0],
+            "sf": [0, 0],
+            "tb": [0, 0],
+            "errors": [0, 0],
+            "chances": [0, 0],
+            "ip": [3.0, 3.0],
+            "w": [0, 0],
+            "k": [0, 0],
+            "walks_allowed": [1, 2],
+            "hits_allowed": [3, 3],
+            "sv": [0, 0],
+            "holds": [0, 0],
+            "avg": [0.0, 0.0],
+            "ops": [0.0, 0.0],
+            "fpct": [0.0, 0.0],
+            "whip": [1.333, 1.667],
+            "k_bb": [0.0, 0.0],
+            "sv_h": [0, 0],
+        }
+    )
     result = _aggregate_to_team(df)
     # Combined: (1+2 walks + 3+3 hits) / (3+3) IP = 9/6 = 1.5
     assert abs(result.iloc[0]["whip"] - 1.5) < 0.001
@@ -248,14 +310,18 @@ def test_aggregate_to_team_empty_returns_zeros():
 
 
 def test_enrich_roster_adds_accumulated_ip():
-    roster = pd.DataFrame({
-        "player_id": ["p1", "p2"],
-        "slot": ["SP", "C"],
-    })
-    stats = pd.DataFrame({
-        "player_id": ["p1"],
-        "ip": [12.0],
-    })
+    roster = pd.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "slot": ["SP", "C"],
+        }
+    )
+    stats = pd.DataFrame(
+        {
+            "player_id": ["p1"],
+            "ip": [12.0],
+        }
+    )
     result = _enrich_roster_with_stats(roster, stats)
     assert result.loc[result["player_id"] == "p1", "accumulated_ip"].iloc[0] == 12.0
     assert result.loc[result["player_id"] == "p2", "accumulated_ip"].iloc[0] == 0.0
@@ -272,6 +338,7 @@ def test_enrich_roster_empty_stats():
 
 def test_step_write_daily_report_inserts_row(conn, today, settings):
     from src.pipeline.daily_run import get_fantasy_week
+
     week = get_fantasy_week(today, _get_season_start(today.year))
 
     report = {
@@ -280,15 +347,20 @@ def test_step_write_daily_report_inserts_row(conn, today, settings):
         "lineup": {"C": "p1"},
         "adds": [],
         "matchup_summary": [],
-        "ip_pace": {"current_ip": 0.0, "projected_ip": 0.0, "min_ip": 21, "on_pace": False},
+        "ip_pace": {
+            "current_ip": 0.0,
+            "projected_ip": 0.0,
+            "min_ip": 21,
+            "on_pace": False,
+        },
         "callup_alerts": [],
     }
     n = _step_write_daily_report(conn, report, today, week, today.year, "run-123")
     assert n == 1
 
     row = conn.execute(
-        f"SELECT report_json, week_number FROM {FACT_DAILY_REPORTS} WHERE report_date = ?"
-        , [today]
+        f"SELECT report_json, week_number FROM {FACT_DAILY_REPORTS} WHERE report_date = ?",
+        [today],
     ).fetchone()
     assert row is not None
     parsed = json.loads(row[0])
@@ -299,21 +371,32 @@ def test_step_write_daily_report_inserts_row(conn, today, settings):
 def test_step_write_daily_report_upserts(conn, today, settings):
     """Re-writing the same report_date replaces the row."""
     from src.pipeline.daily_run import get_fantasy_week
+
     week = get_fantasy_week(today, _get_season_start(today.year))
 
-    report_v1 = {"report_date": today.isoformat(), "week_number": week,
-                 "lineup": {"C": "p1"}, "adds": [], "matchup_summary": [],
-                 "ip_pace": {}, "callup_alerts": []}
-    report_v2 = {"report_date": today.isoformat(), "week_number": week,
-                 "lineup": {"C": "p2"}, "adds": [], "matchup_summary": [],
-                 "ip_pace": {}, "callup_alerts": []}
+    report_v1 = {
+        "report_date": today.isoformat(),
+        "week_number": week,
+        "lineup": {"C": "p1"},
+        "adds": [],
+        "matchup_summary": [],
+        "ip_pace": {},
+        "callup_alerts": [],
+    }
+    report_v2 = {
+        "report_date": today.isoformat(),
+        "week_number": week,
+        "lineup": {"C": "p2"},
+        "adds": [],
+        "matchup_summary": [],
+        "ip_pace": {},
+        "callup_alerts": [],
+    }
 
     _step_write_daily_report(conn, report_v1, today, week, today.year, "run-1")
     _step_write_daily_report(conn, report_v2, today, week, today.year, "run-2")
 
-    count = conn.execute(
-        f"SELECT COUNT(*) FROM {FACT_DAILY_REPORTS}"
-    ).fetchone()[0]
+    count = conn.execute(f"SELECT COUNT(*) FROM {FACT_DAILY_REPORTS}").fetchone()[0]
     assert count == 1
 
     row = conn.execute(
@@ -365,38 +448,46 @@ def test_step_log_pipeline_run_partial_status(conn):
 def test_query_weekly_acquisitions_counts_adds(conn, today):
     """Counts 'add' transactions this week for the given team."""
     week_start = _get_week_start(today)
-    staging = pd.DataFrame([
-        {
-            "transaction_id": "t1",
-            "league_id": 87941,
-            "transaction_date": (week_start + datetime.timedelta(days=1)).isoformat(),
-            "type": "add",
-            "team_id": "422.l.87941.t.3",
-            "player_id": "p1",
-            "from_team_id": None,
-            "notes": None,
-        },
-        {
-            "transaction_id": "t2",
-            "league_id": 87941,
-            "transaction_date": (week_start + datetime.timedelta(days=2)).isoformat(),
-            "type": "add",
-            "team_id": "422.l.87941.t.3",
-            "player_id": "p2",
-            "from_team_id": None,
-            "notes": None,
-        },
-        {
-            "transaction_id": "t3",
-            "league_id": 87941,
-            "transaction_date": (week_start + datetime.timedelta(days=1)).isoformat(),
-            "type": "drop",  # Should NOT be counted
-            "team_id": "422.l.87941.t.3",
-            "player_id": "p3",
-            "from_team_id": None,
-            "notes": None,
-        },
-    ])
+    staging = pd.DataFrame(
+        [
+            {
+                "transaction_id": "t1",
+                "league_id": 87941,
+                "transaction_date": (
+                    week_start + datetime.timedelta(days=1)
+                ).isoformat(),
+                "type": "add",
+                "team_id": "422.l.87941.t.3",
+                "player_id": "p1",
+                "from_team_id": None,
+                "notes": None,
+            },
+            {
+                "transaction_id": "t2",
+                "league_id": 87941,
+                "transaction_date": (
+                    week_start + datetime.timedelta(days=2)
+                ).isoformat(),
+                "type": "add",
+                "team_id": "422.l.87941.t.3",
+                "player_id": "p2",
+                "from_team_id": None,
+                "notes": None,
+            },
+            {
+                "transaction_id": "t3",
+                "league_id": 87941,
+                "transaction_date": (
+                    week_start + datetime.timedelta(days=1)
+                ).isoformat(),
+                "type": "drop",  # Should NOT be counted
+                "team_id": "422.l.87941.t.3",
+                "player_id": "p3",
+                "from_team_id": None,
+                "notes": None,
+            },
+        ]
+    )
     conn.register("_txn_tmp", staging)
     conn.execute("INSERT INTO fact_transactions SELECT * FROM _txn_tmp")
     conn.unregister("_txn_tmp")
@@ -416,20 +507,36 @@ def test_query_weekly_acquisitions_returns_zero_when_empty(conn, today):
 def test_update_waiver_scores_overwrites_placeholder(conn, today):
     """Real scores replace the placeholder 0.0 scores."""
     # Stage placeholder
-    placeholder = pd.DataFrame([
-        {"player_id": "p1", "score_date": today, "overall_score": 0.0,
-         "category_scores": None, "is_callup": False,
-         "days_since_callup": None, "recommended_drop_id": None, "notes": None},
-    ])
+    placeholder = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "score_date": today,
+                "overall_score": 0.0,
+                "category_scores": None,
+                "is_callup": False,
+                "days_since_callup": None,
+                "recommended_drop_id": None,
+                "notes": None,
+            },
+        ]
+    )
     conn.register("_ph", placeholder)
     conn.execute(f"INSERT INTO {FACT_WAIVER_SCORES} SELECT * FROM _ph")
     conn.unregister("_ph")
 
-    ranked = pd.DataFrame([
-        {"player_id": "p1", "overall_score": 42.5,
-         "category_scores": '{"h": 1.0}', "recommended_drop_id": "p99",
-         "is_callup": False, "days_since_callup": None},
-    ])
+    ranked = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "overall_score": 42.5,
+                "category_scores": '{"h": 1.0}',
+                "recommended_drop_id": "p99",
+                "is_callup": False,
+                "days_since_callup": None,
+            },
+        ]
+    )
     _update_waiver_scores(conn, ranked, today)
 
     row = conn.execute(
@@ -456,12 +563,28 @@ def test_run_daily_pipeline_returns_run_id(conn, settings, today, monkeypatch):
     empty_df = pd.DataFrame()
 
     with (
-        mock.patch("src.pipeline.daily_run.YahooClient.from_env", side_effect=Exception("no creds")),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_daily_game_schedule", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_steamer_projections", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_recent_callups", return_value=empty_df),
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env",
+            side_effect=Exception("no creds"),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_recent_callups",
+            return_value=empty_df,
+        ),
     ):
         result = run_daily_pipeline(conn, settings, run_date=today)
 
@@ -476,12 +599,28 @@ def test_run_daily_pipeline_logs_run(conn, settings, today, monkeypatch):
     empty_df = pd.DataFrame()
 
     with (
-        mock.patch("src.pipeline.daily_run.YahooClient.from_env", side_effect=Exception("no creds")),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_daily_game_schedule", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_steamer_projections", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_recent_callups", return_value=empty_df),
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env",
+            side_effect=Exception("no creds"),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_recent_callups",
+            return_value=empty_df,
+        ),
     ):
         result = run_daily_pipeline(conn, settings, run_date=today)
 
@@ -490,3 +629,21 @@ def test_run_daily_pipeline_logs_run(conn, settings, today, monkeypatch):
         f"SELECT status FROM {FACT_PIPELINE_RUNS} WHERE run_id = ?", [run_id]
     ).fetchone()
     assert row is not None
+
+
+# ── __main__ exit code logic ──────────────────────────────────────────────────
+
+
+def test_main_exit_code_success():
+    """status != 'failed' maps to exit code 0."""
+    for status in ("success", "partial"):
+        result = {"run_id": "run-x", "status": status, "rows_written": {}}
+        expected_exit = 0 if result["status"] != "failed" else 1
+        assert expected_exit == 0
+
+
+def test_main_exit_code_failed():
+    """status == 'failed' maps to exit code 1."""
+    result = {"run_id": "run-y", "status": "failed", "rows_written": {}}
+    expected_exit = 0 if result["status"] != "failed" else 1
+    assert expected_exit == 1

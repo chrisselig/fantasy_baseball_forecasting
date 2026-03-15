@@ -1192,3 +1192,20 @@ def run_daily_pipeline(
         duration,
     )
     return {"run_id": run_id, "status": status, "rows_written": rows_written}
+
+
+if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    from src.config import load_league_settings
+    from src.db.connection import managed_connection
+
+    settings = load_league_settings()
+    with managed_connection() as conn:
+        result = run_daily_pipeline(conn, settings)
+    print(f"Pipeline complete: {result}")
+    sys.exit(0 if result["status"] != "failed" else 1)

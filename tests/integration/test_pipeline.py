@@ -21,13 +21,13 @@ import pandas as pd
 import pytest
 
 from src.config import load_league_settings
+from src.db.loaders_mlb import get_fantasy_week
 from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
     FACT_PIPELINE_RUNS,
     FACT_PLAYER_STATS_DAILY,
     FACT_ROSTERS,
-    FACT_TRANSACTIONS,
     FACT_WAIVER_SCORES,
     create_all_tables,
 )
@@ -36,8 +36,6 @@ from src.pipeline.daily_run import (
     _step_write_daily_report,
     run_daily_pipeline,
 )
-from src.db.loaders_mlb import get_fantasy_week
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -76,43 +74,100 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
     - fact_player_stats_daily: 2 days of stats for this week
     - fact_waiver_scores: staged FA records (score=0)
     """
-    season = today.year
     my_team_key = "422.l.87941.t.3"
     week_start = today - datetime.timedelta(days=today.weekday())
 
     # ── dim_players ────────────────────────────────────────────────────────────
-    players = pd.DataFrame([
-        # My roster
-        {"player_id": "422.p.1", "full_name": "Aaron Judge",
-         "mlb_id": 592450, "fg_id": "16378", "team": "NYY",
-         "positions": ["OF"], "bats": "R", "throws": "R", "status": "Active",
-         "updated_at": None},
-        {"player_id": "422.p.2", "full_name": "Freddie Freeman",
-         "mlb_id": 518692, "fg_id": "7163", "team": "LAD",
-         "positions": ["1B"], "bats": "L", "throws": "R", "status": "Active",
-         "updated_at": None},
-        {"player_id": "422.p.3", "full_name": "Gerrit Cole",
-         "mlb_id": 543037, "fg_id": "13125", "team": "NYY",
-         "positions": ["SP"], "bats": "R", "throws": "R", "status": "Active",
-         "updated_at": None},
-        {"player_id": "422.p.4", "full_name": "Emmanuel Clase",
-         "mlb_id": 669373, "fg_id": "22235", "team": "CLE",
-         "positions": ["RP"], "bats": "R", "throws": "R", "status": "Active",
-         "updated_at": None},
-        {"player_id": "422.p.5", "full_name": "Yordan Alvarez",
-         "mlb_id": 670541, "fg_id": "19556", "team": "HOU",
-         "positions": ["OF", "Util"], "bats": "L", "throws": "R", "status": "Active",
-         "updated_at": None},
-        # Free agents
-        {"player_id": "422.p.6", "full_name": "Jackson Chourio",
-         "mlb_id": 672921, "fg_id": "26490", "team": "MIL",
-         "positions": ["OF"], "bats": "R", "throws": "R", "status": "Active",
-         "updated_at": None},
-        {"player_id": "422.p.7", "full_name": "Kyle Freeland",
-         "mlb_id": 621433, "fg_id": "15678", "team": "COL",
-         "positions": ["SP"], "bats": "L", "throws": "L", "status": "Active",
-         "updated_at": None},
-    ])
+    players = pd.DataFrame(
+        [
+            # My roster
+            {
+                "player_id": "422.p.1",
+                "full_name": "Aaron Judge",
+                "mlb_id": 592450,
+                "fg_id": "16378",
+                "team": "NYY",
+                "positions": ["OF"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+            {
+                "player_id": "422.p.2",
+                "full_name": "Freddie Freeman",
+                "mlb_id": 518692,
+                "fg_id": "7163",
+                "team": "LAD",
+                "positions": ["1B"],
+                "bats": "L",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+            {
+                "player_id": "422.p.3",
+                "full_name": "Gerrit Cole",
+                "mlb_id": 543037,
+                "fg_id": "13125",
+                "team": "NYY",
+                "positions": ["SP"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+            {
+                "player_id": "422.p.4",
+                "full_name": "Emmanuel Clase",
+                "mlb_id": 669373,
+                "fg_id": "22235",
+                "team": "CLE",
+                "positions": ["RP"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+            {
+                "player_id": "422.p.5",
+                "full_name": "Yordan Alvarez",
+                "mlb_id": 670541,
+                "fg_id": "19556",
+                "team": "HOU",
+                "positions": ["OF", "Util"],
+                "bats": "L",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+            # Free agents
+            {
+                "player_id": "422.p.6",
+                "full_name": "Jackson Chourio",
+                "mlb_id": 672921,
+                "fg_id": "26490",
+                "team": "MIL",
+                "positions": ["OF"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+            {
+                "player_id": "422.p.7",
+                "full_name": "Kyle Freeland",
+                "mlb_id": 621433,
+                "fg_id": "15678",
+                "team": "COL",
+                "positions": ["SP"],
+                "bats": "L",
+                "throws": "L",
+                "status": "Active",
+                "updated_at": None,
+            },
+        ]
+    )
     conn.register("_players", players)
     conn.execute(f"""
         INSERT OR REPLACE INTO {DIM_PLAYERS}
@@ -123,18 +178,45 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
     conn.unregister("_players")
 
     # ── fact_rosters ───────────────────────────────────────────────────────────
-    rosters = pd.DataFrame([
-        {"team_id": my_team_key, "player_id": "422.p.1",
-         "snapshot_date": today, "roster_slot": "OF", "acquisition_type": "draft"},
-        {"team_id": my_team_key, "player_id": "422.p.2",
-         "snapshot_date": today, "roster_slot": "1B", "acquisition_type": "draft"},
-        {"team_id": my_team_key, "player_id": "422.p.3",
-         "snapshot_date": today, "roster_slot": "SP", "acquisition_type": "draft"},
-        {"team_id": my_team_key, "player_id": "422.p.4",
-         "snapshot_date": today, "roster_slot": "RP", "acquisition_type": "waiver"},
-        {"team_id": my_team_key, "player_id": "422.p.5",
-         "snapshot_date": today, "roster_slot": "Util", "acquisition_type": "draft"},
-    ])
+    rosters = pd.DataFrame(
+        [
+            {
+                "team_id": my_team_key,
+                "player_id": "422.p.1",
+                "snapshot_date": today,
+                "roster_slot": "OF",
+                "acquisition_type": "draft",
+            },
+            {
+                "team_id": my_team_key,
+                "player_id": "422.p.2",
+                "snapshot_date": today,
+                "roster_slot": "1B",
+                "acquisition_type": "draft",
+            },
+            {
+                "team_id": my_team_key,
+                "player_id": "422.p.3",
+                "snapshot_date": today,
+                "roster_slot": "SP",
+                "acquisition_type": "draft",
+            },
+            {
+                "team_id": my_team_key,
+                "player_id": "422.p.4",
+                "snapshot_date": today,
+                "roster_slot": "RP",
+                "acquisition_type": "waiver",
+            },
+            {
+                "team_id": my_team_key,
+                "player_id": "422.p.5",
+                "snapshot_date": today,
+                "roster_slot": "Util",
+                "acquisition_type": "draft",
+            },
+        ]
+    )
     conn.register("_rosters", rosters)
     conn.execute(f"INSERT OR REPLACE INTO {FACT_ROSTERS} SELECT * FROM _rosters")
     conn.unregister("_rosters")
@@ -143,42 +225,96 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
     stats_rows = []
     for day_offset in range(2):
         stat_date = week_start + datetime.timedelta(days=day_offset)
-        stats_rows.extend([
-            {
-                "player_id": "422.p.1", "stat_date": stat_date,
-                "ab": 4, "h": 2, "hr": 1, "sb": 0, "bb": 1,
-                "hbp": 0, "sf": 0, "tb": 5, "errors": 0, "chances": 3,
-                "ip": None, "w": None, "k": None,
-                "walks_allowed": None, "hits_allowed": None,
-                "sv": None, "holds": None,
-                "avg": 0.500, "ops": 0.950, "fpct": 1.0,
-                "whip": None, "k_bb": None, "sv_h": None,
-            },
-            {
-                "player_id": "422.p.3", "stat_date": stat_date,
-                "ab": None, "h": None, "hr": None, "sb": None, "bb": None,
-                "hbp": None, "sf": None, "tb": None, "errors": 0, "chances": 2,
-                "ip": 6.0, "w": 1, "k": 8,
-                "walks_allowed": 2, "hits_allowed": 5,
-                "sv": 0, "holds": 0,
-                "avg": None, "ops": None, "fpct": 1.0,
-                "whip": 1.167, "k_bb": 4.0, "sv_h": 0,
-            },
-        ])
+        stats_rows.extend(
+            [
+                {
+                    "player_id": "422.p.1",
+                    "stat_date": stat_date,
+                    "ab": 4,
+                    "h": 2,
+                    "hr": 1,
+                    "sb": 0,
+                    "bb": 1,
+                    "hbp": 0,
+                    "sf": 0,
+                    "tb": 5,
+                    "errors": 0,
+                    "chances": 3,
+                    "ip": None,
+                    "w": None,
+                    "k": None,
+                    "walks_allowed": None,
+                    "hits_allowed": None,
+                    "sv": None,
+                    "holds": None,
+                    "avg": 0.500,
+                    "ops": 0.950,
+                    "fpct": 1.0,
+                    "whip": None,
+                    "k_bb": None,
+                    "sv_h": None,
+                },
+                {
+                    "player_id": "422.p.3",
+                    "stat_date": stat_date,
+                    "ab": None,
+                    "h": None,
+                    "hr": None,
+                    "sb": None,
+                    "bb": None,
+                    "hbp": None,
+                    "sf": None,
+                    "tb": None,
+                    "errors": 0,
+                    "chances": 2,
+                    "ip": 6.0,
+                    "w": 1,
+                    "k": 8,
+                    "walks_allowed": 2,
+                    "hits_allowed": 5,
+                    "sv": 0,
+                    "holds": 0,
+                    "avg": None,
+                    "ops": None,
+                    "fpct": 1.0,
+                    "whip": 1.167,
+                    "k_bb": 4.0,
+                    "sv_h": 0,
+                },
+            ]
+        )
     stats_df = pd.DataFrame(stats_rows)
     conn.register("_stats", stats_df)
-    conn.execute(f"INSERT OR REPLACE INTO {FACT_PLAYER_STATS_DAILY} SELECT * FROM _stats")
+    conn.execute(
+        f"INSERT OR REPLACE INTO {FACT_PLAYER_STATS_DAILY} SELECT * FROM _stats"
+    )
     conn.unregister("_stats")
 
     # ── fact_waiver_scores (staged with score=0) ───────────────────────────────
-    fa_staged = pd.DataFrame([
-        {"player_id": "422.p.6", "score_date": today, "overall_score": 0.0,
-         "category_scores": None, "is_callup": False,
-         "days_since_callup": None, "recommended_drop_id": None, "notes": None},
-        {"player_id": "422.p.7", "score_date": today, "overall_score": 0.0,
-         "category_scores": None, "is_callup": False,
-         "days_since_callup": None, "recommended_drop_id": None, "notes": None},
-    ])
+    fa_staged = pd.DataFrame(
+        [
+            {
+                "player_id": "422.p.6",
+                "score_date": today,
+                "overall_score": 0.0,
+                "category_scores": None,
+                "is_callup": False,
+                "days_since_callup": None,
+                "recommended_drop_id": None,
+                "notes": None,
+            },
+            {
+                "player_id": "422.p.7",
+                "score_date": today,
+                "overall_score": 0.0,
+                "category_scores": None,
+                "is_callup": False,
+                "days_since_callup": None,
+                "recommended_drop_id": None,
+                "notes": None,
+            },
+        ]
+    )
     conn.register("_fa", fa_staged)
     conn.execute(f"INSERT OR REPLACE INTO {FACT_WAIVER_SCORES} SELECT * FROM _fa")
     conn.unregister("_fa")
@@ -205,15 +341,28 @@ def test_daily_report_roundtrip(seeded_conn, today, week):
             }
         ],
         "matchup_summary": [
-            {"category": "h", "my_value": 10.0, "opp_value": 8.0,
-             "my_leads": True, "margin_pct": 0.2, "win_prob": 0.7,
-             "status": "flippable_win"},
+            {
+                "category": "h",
+                "my_value": 10.0,
+                "opp_value": 8.0,
+                "my_leads": True,
+                "margin_pct": 0.2,
+                "win_prob": 0.7,
+                "status": "flippable_win",
+            },
         ],
-        "ip_pace": {"current_ip": 12.0, "projected_ip": 28.0, "min_ip": 21, "on_pace": True},
+        "ip_pace": {
+            "current_ip": 12.0,
+            "projected_ip": 28.0,
+            "min_ip": 21,
+            "on_pace": True,
+        },
         "callup_alerts": [],
     }
 
-    _step_write_daily_report(seeded_conn, report, today, week, today.year, "run-integ-1")
+    _step_write_daily_report(
+        seeded_conn, report, today, week, today.year, "run-integ-1"
+    )
 
     row = seeded_conn.execute(
         f"SELECT report_json, week_number, season FROM {FACT_DAILY_REPORTS} WHERE report_date = ?",
@@ -234,40 +383,96 @@ def test_daily_report_roundtrip(seeded_conn, today, week):
 
 
 def _make_mock_roster_df(team_key: str, today: datetime.date) -> pd.DataFrame:
-    return pd.DataFrame([
-        {"team_id": team_key, "player_id": "422.p.1",
-         "snapshot_date": today, "roster_slot": "OF", "acquisition_type": "draft"},
-        {"team_id": team_key, "player_id": "422.p.3",
-         "snapshot_date": today, "roster_slot": "SP", "acquisition_type": "draft"},
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "team_id": team_key,
+                "player_id": "422.p.1",
+                "snapshot_date": today,
+                "roster_slot": "OF",
+                "acquisition_type": "draft",
+            },
+            {
+                "team_id": team_key,
+                "player_id": "422.p.3",
+                "snapshot_date": today,
+                "roster_slot": "SP",
+                "acquisition_type": "draft",
+            },
+        ]
+    )
 
 
 def _make_mock_all_rosters_df(today: datetime.date) -> pd.DataFrame:
-    return pd.DataFrame(columns=["team_id", "player_id", "snapshot_date", "roster_slot", "acquisition_type"])
+    return pd.DataFrame(
+        columns=[
+            "team_id",
+            "player_id",
+            "snapshot_date",
+            "roster_slot",
+            "acquisition_type",
+        ]
+    )
 
 
 def _make_mock_transactions_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=["transaction_id", "league_id", "transaction_date", "type", "team_id", "player_id", "from_team_id", "notes"])
+    return pd.DataFrame(
+        columns=[
+            "transaction_id",
+            "league_id",
+            "transaction_date",
+            "type",
+            "team_id",
+            "player_id",
+            "from_team_id",
+            "notes",
+        ]
+    )
 
 
 def _make_mock_players_df() -> pd.DataFrame:
-    return pd.DataFrame([
-        {"player_id": "422.p.1", "full_name": "Aaron Judge",
-         "mlb_id": 592450, "fg_id": "16378", "team": "NYY",
-         "positions": ["OF"], "bats": "R", "throws": "R",
-         "status": "Active", "updated_at": None},
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "player_id": "422.p.1",
+                "full_name": "Aaron Judge",
+                "mlb_id": 592450,
+                "fg_id": "16378",
+                "team": "NYY",
+                "positions": ["OF"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": None,
+            },
+        ]
+    )
 
 
 def _make_mock_fa_df() -> pd.DataFrame:
-    return pd.DataFrame([
-        {"player_id": "422.p.6", "full_name": "Jackson Chourio",
-         "team": "MIL", "positions": ["OF"],
-         "h": 1.5, "hr": 0.3, "sb": 0.2, "bb": 0.4,
-         "ab": 4.0, "avg": 0.300, "ops": 0.850,
-         "w": 0, "k": 0, "whip": 0.0, "k_bb": 0.0, "sv_h": 0,
-         "fpct": 0.990},
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "player_id": "422.p.6",
+                "full_name": "Jackson Chourio",
+                "team": "MIL",
+                "positions": ["OF"],
+                "h": 1.5,
+                "hr": 0.3,
+                "sb": 0.2,
+                "bb": 0.4,
+                "ab": 4.0,
+                "avg": 0.300,
+                "ops": 0.850,
+                "w": 0,
+                "k": 0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0,
+                "fpct": 0.990,
+            },
+        ]
+    )
 
 
 def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
@@ -285,12 +490,27 @@ def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
     empty_df = pd.DataFrame()
 
     with (
-        mock.patch("src.pipeline.daily_run.YahooClient.from_env", return_value=mock_yahoo),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_daily_game_schedule", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_steamer_projections", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_recent_callups", return_value=empty_df),
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env", return_value=mock_yahoo
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_recent_callups",
+            return_value=empty_df,
+        ),
     ):
         result = run_daily_pipeline(conn, settings, run_date=today)
 
@@ -305,9 +525,7 @@ def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
     assert run_row is not None
 
     # Rosters were loaded (Yahoo mock returned data)
-    roster_count = conn.execute(
-        f"SELECT COUNT(*) FROM {FACT_ROSTERS}"
-    ).fetchone()[0]
+    roster_count = conn.execute(f"SELECT COUNT(*) FROM {FACT_ROSTERS}").fetchone()[0]
     assert roster_count > 0
 
     # Daily report written (analysis ran with empty stats → valid but zero-filled report)
@@ -327,12 +545,28 @@ def test_pipeline_survives_yahoo_failure(conn, settings, today, monkeypatch):
     empty_df = pd.DataFrame()
 
     with (
-        mock.patch("src.pipeline.daily_run.YahooClient.from_env", side_effect=Exception("OAuth failed")),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_daily_game_schedule", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_steamer_projections", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_recent_callups", return_value=empty_df),
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env",
+            side_effect=Exception("OAuth failed"),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_recent_callups",
+            return_value=empty_df,
+        ),
     ):
         result = run_daily_pipeline(conn, settings, run_date=today)
 
@@ -361,12 +595,27 @@ def test_pipeline_idempotent(conn, settings, today, monkeypatch):
     empty_df = pd.DataFrame()
 
     with (
-        mock.patch("src.pipeline.daily_run.YahooClient.from_env", return_value=mock_yahoo),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_daily_game_schedule", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_steamer_projections", return_value=empty_df),
-        mock.patch("src.pipeline.daily_run.mlb_client.get_recent_callups", return_value=empty_df),
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env", return_value=mock_yahoo
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_batter_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_pitcher_stats", return_value=empty_df
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_recent_callups",
+            return_value=empty_df,
+        ),
     ):
         run_daily_pipeline(conn, settings, run_date=today)
         run_daily_pipeline(conn, settings, run_date=today)
@@ -378,7 +627,5 @@ def test_pipeline_idempotent(conn, settings, today, monkeypatch):
     assert report_count == 1
 
     # Two distinct pipeline run records
-    run_count = conn.execute(
-        f"SELECT COUNT(*) FROM {FACT_PIPELINE_RUNS}"
-    ).fetchone()[0]
+    run_count = conn.execute(f"SELECT COUNT(*) FROM {FACT_PIPELINE_RUNS}").fetchone()[0]
     assert run_count == 2

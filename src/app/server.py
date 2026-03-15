@@ -48,6 +48,45 @@ def _get_my_team_key() -> str:
     return ""
 
 
+def _load_data_freshness() -> dict[str, object]:
+    """Query when the last successful pipeline run completed.
+
+    Returns:
+        {
+          "generated_at": str | None,   # ISO timestamp or None
+          "is_stale": bool,             # True if > 24 hours old
+          "is_offline": bool,           # True if DB query failed
+        }
+    """
+    try:
+        with managed_connection() as conn:
+            row = conn.execute("""
+                SELECT generated_at
+                FROM fact_daily_reports
+                WHERE report_date = CURRENT_DATE
+                LIMIT 1
+            """).fetchone()
+            if row and row[0]:
+                import datetime
+
+                generated_at = str(row[0])
+                # Parse and check staleness
+                try:
+                    ts = datetime.datetime.fromisoformat(generated_at)
+                    age = datetime.datetime.now() - ts
+                    is_stale = age.total_seconds() > 86400  # > 24 hours
+                except ValueError:
+                    is_stale = False
+                return {
+                    "generated_at": generated_at,
+                    "is_stale": is_stale,
+                    "is_offline": False,
+                }
+    except Exception as exc:
+        logger.warning("Could not load data freshness: %s", exc)
+    return {"generated_at": None, "is_stale": False, "is_offline": True}
+
+
 def _load_daily_report() -> dict[str, Any]:
     """Load today's pre-built report from MotherDuck.
 
@@ -195,6 +234,44 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     _refresh_counter: reactive.Value[int] = reactive.Value(0)
 
     # ── Reactive data sources ──────────────────────────────────────────────────
+
+    @reactive.calc
+    def data_freshness() -> dict[str, object]:
+        """Data freshness metadata."""
+        _refresh_counter()  # depend on refresh trigger
+        return _load_data_freshness()
+
+    @render.ui
+    def data_status_banner() -> Tag:
+        """Show data freshness / offline status banner at top of every tab."""
+        freshness = data_freshness()
+        is_offline = bool(freshness.get("is_offline", False))
+        is_stale = bool(freshness.get("is_stale", False))
+        generated_at = freshness.get("generated_at")
+
+        if is_offline:
+            return ui.div(
+                ui.span(
+                    "\u26a0\ufe0f Offline \u2014 showing cached data. Connect to MotherDuck to refresh."
+                ),
+                class_="alert alert-danger mb-0 py-1",
+                role="alert",
+            )
+        elif is_stale:
+            return ui.div(
+                ui.span(
+                    f"\u26a0\ufe0f Data may be stale. Last updated: {generated_at}"
+                ),
+                class_="alert alert-warning mb-0 py-1",
+                role="alert",
+            )
+        elif generated_at:
+            return ui.div(
+                ui.span(f"\u2705 Data as of {generated_at}"),
+                class_="alert alert-success mb-0 py-1",
+                role="alert",
+            )
+        return ui.div()
 
     @reactive.calc
     def daily_report() -> dict[str, Any]:
