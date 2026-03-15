@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
 import duckdb
@@ -19,6 +18,7 @@ from htmltools import Tag
 from shiny import Inputs, Outputs, Session, reactive, render, ui
 
 from src.app.stubs import STUB_DAILY_REPORT, STUB_ROSTER_DF, STUB_WAIVER_DF
+from src.config import load_league_settings
 from src.db.connection import managed_connection
 from src.db.schema import (
     DIM_PLAYERS,
@@ -29,23 +29,14 @@ from src.db.schema import (
 
 logger = logging.getLogger(__name__)
 
-# League ID for constructing team key when my_team_key is not in config
-_LEAGUE_ID = 87941
-
 
 def _get_my_team_key() -> str:
-    """Return my Yahoo team key from env var.
+    """Return my team key from league config.
 
-    Reads YAHOO_TEAM_KEY directly if set, otherwise constructs from
-    YAHOO_TEAM_ID (integer part only).
+    Reads my_team_key from config/league_settings.yaml.  The Shiny app is
+    read-only against MotherDuck and does not need any Yahoo credentials.
     """
-    full_key = os.environ.get("YAHOO_TEAM_KEY", "")
-    if full_key:
-        return full_key
-    team_id = os.environ.get("YAHOO_TEAM_ID", "")
-    if team_id:
-        return f"422.l.{_LEAGUE_ID}.t.{team_id}"
-    return ""
+    return load_league_settings().my_team_key
 
 
 def _load_data_freshness() -> dict[str, object]:
