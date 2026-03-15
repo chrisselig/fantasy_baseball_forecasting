@@ -49,21 +49,30 @@ logger = logging.getLogger(__name__)
 
 # ── Run parameters ────────────────────────────────────────────────────────────
 
-# Mid-late 2025 season window: week 23 of a typical fantasy calendar.
-# RUN_DATE is a Wednesday so the week has started and there are stats to show.
-RUN_DATE = datetime.date(2025, 9, 17)  # Wednesday
-# Pipeline query: stat_date >= week_start AND stat_date < run_date.
-# Week starts Monday 2025-09-15, so a stat_date of 2025-09-15 is included.
-STAT_DATE = datetime.date(2025, 9, 15)  # Monday of run week
+# Use today's date so the app's CURRENT_DATE queries find our data.
+RUN_DATE = datetime.date.today()
+# stat_date must be: >= week_start AND < run_date.
+# Use Monday of the current week (always satisfies both conditions for Tue–Sun).
+_WEEK_START = RUN_DATE - datetime.timedelta(days=RUN_DATE.weekday())
+STAT_DATE = _WEEK_START
 
 MY_TEAM_KEY = "422.l.87941.t.3"
 OPP_TEAM_KEY = "422.l.87941.t.5"
 
 _LEAGUE_ID = 87941
-_SEASON = 2025
+_SEASON = RUN_DATE.year
+# Season start dates (matches pipeline's _SEASON_STARTS dict).
+_SEASON_STARTS = {
+    2024: datetime.date(2024, 3, 20),
+    2025: datetime.date(2025, 3, 27),
+    2026: datetime.date(2026, 3, 26),
+}
+_SEASON_START = _SEASON_STARTS.get(_SEASON, datetime.date(_SEASON, 3, 26))
 # Compute week using the same formula as the pipeline so matchup lookup succeeds.
-_SEASON_START_2025 = datetime.date(2025, 3, 27)
-_WEEK = get_fantasy_week(RUN_DATE, _SEASON_START_2025)
+_WEEK = get_fantasy_week(RUN_DATE, _SEASON_START)
+
+# pybaseball season to fetch — always use 2025 (most recent complete season).
+_PYBASEBALL_SEASON = 2025
 
 # ── Player pool ───────────────────────────────────────────────────────────────
 # (full_name, mlb_id, fg_id, team, eligible_positions, bats, throws)
@@ -716,8 +725,10 @@ def main() -> None:
 
     print(f"\n{'═' * 62}")
     print("  Fantasy Baseball 2025 — MotherDuck Seeder")
-    print(f"  Run date  : {RUN_DATE}  (fantasy week {_WEEK}, 2025 season)")
-    print(f"  Stat date : {STAT_DATE}  (full-season totals tagged to this date)")
+    print(f"  Run date  : {RUN_DATE}  (fantasy week {_WEEK}, season {_SEASON})")
+    print(
+        f"  Stat date : {STAT_DATE}  ({_PYBASEBALL_SEASON} season totals tagged to this date)"
+    )
     print(f"  Seed      : {args.seed}")
     if args.dry_run:
         print("  Mode      : DRY RUN (in-memory DuckDB — MotherDuck NOT modified)")
@@ -726,7 +737,7 @@ def main() -> None:
     print(f"{'═' * 62}")
 
     # Fetch real 2025 stats
-    bat_df, pit_df = _fetch_real_stats(_SEASON)
+    bat_df, pit_df = _fetch_real_stats(_PYBASEBALL_SEASON)
 
     # Assign rosters
     my_roster, opp_roster = build_rosters(rng)
