@@ -35,14 +35,17 @@ jobs:
           SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
           SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
           SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: |
           rsconnect deploy shiny . \
             --title "Fantasy Baseball Dashboard" \
-            --entrypoint src/app/app.py
+            --entrypoint src/app/app.py \
+            -E MOTHERDUCK_TOKEN
 
 # ── GitHub Secrets required ───────────────────────────────────────────────────
 # SHINYAPPS_ACCOUNT  — shinyapps.io account name (e.g. chris-selig)
 # SHINYAPPS_TOKEN    — shinyapps.io token (from shinyapps.io → Account → Tokens)
 # SHINYAPPS_SECRET   — shinyapps.io token secret
+# MOTHERDUCK_TOKEN   — MotherDuck access token (passed to the deployed app)
 #
 # Add these at: github.com/<owner>/<repo>/settings/secrets/actions
