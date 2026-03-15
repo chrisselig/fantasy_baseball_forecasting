@@ -747,10 +747,27 @@ def main() -> None:
         finally:
             conn.close()
     else:
+        _ensure_motherduck_db()
         with managed_connection() as conn:
             print("\n  Populating MotherDuck...")
             populate_db(conn, my_roster, opp_roster, bat_df, pit_df)
             _run_pipeline(conn, my_roster, args.json)
+
+
+def _ensure_motherduck_db() -> None:
+    """Create the MotherDuck database if it doesn't exist yet.
+
+    Connects to the root MotherDuck endpoint (md:) and issues
+    CREATE DATABASE IF NOT EXISTS fantasy_baseball.
+    """
+    import os  # noqa: PLC0415
+
+    token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    print("  Ensuring MotherDuck database exists...")
+    init_conn = duckdb.connect(f"md:?motherduck_token={token}")
+    init_conn.execute("CREATE DATABASE IF NOT EXISTS fantasy_baseball")
+    init_conn.close()
+    print("  Database ready.")
 
 
 def _run_pipeline(
