@@ -51,46 +51,53 @@ def _get_my_team_key() -> str:
 def _load_data_freshness() -> dict[str, object]:
     """Query when the last successful pipeline run completed.
 
+    Uses the most recent report_date rather than CURRENT_DATE so the app
+    shows real data even when the pipeline last ran on a historical date
+    (e.g. during testing with seeded data or on pipeline-idle days).
+
     Returns:
         {
           "generated_at": str | None,   # ISO timestamp or None
-          "is_stale": bool,             # True if > 24 hours old
+          "report_date":  str | None,   # Date of the most recent report
+          "is_stale": bool,             # True if report_date != today
           "is_offline": bool,           # True if DB query failed
         }
     """
     try:
         with managed_connection() as conn:
             row = conn.execute("""
-                SELECT generated_at
+                SELECT report_date, generated_at
                 FROM fact_daily_reports
-                WHERE report_date = CURRENT_DATE
+                ORDER BY report_date DESC
                 LIMIT 1
             """).fetchone()
             if row and row[0]:
                 import datetime
 
-                generated_at = str(row[0])
-                # Parse and check staleness
-                try:
-                    ts = datetime.datetime.fromisoformat(generated_at)
-                    age = datetime.datetime.now() - ts
-                    is_stale = age.total_seconds() > 86400  # > 24 hours
-                except ValueError:
-                    is_stale = False
+                report_date = str(row[0])
+                generated_at = str(row[1]) if row[1] else None
+                is_stale = report_date != datetime.date.today().isoformat()
                 return {
                     "generated_at": generated_at,
+                    "report_date": report_date,
                     "is_stale": is_stale,
                     "is_offline": False,
                 }
     except Exception as exc:
         logger.warning("Could not load data freshness: %s", exc)
-    return {"generated_at": None, "is_stale": False, "is_offline": True}
+    return {
+        "generated_at": None,
+        "report_date": None,
+        "is_stale": False,
+        "is_offline": True,
+    }
 
 
 def _load_daily_report() -> dict[str, Any]:
-    """Load today's pre-built report from MotherDuck.
+    """Load the most recent pre-built report from MotherDuck.
 
-    Queries fact_daily_reports for today's report_json.
+    Queries fact_daily_reports for the newest report_json regardless of date,
+    so the app shows real data even when the pipeline last ran on a past date.
     Falls back to stub data if DB is unavailable or no report exists yet.
     """
     try:
@@ -98,7 +105,7 @@ def _load_daily_report() -> dict[str, Any]:
             result = conn.execute(f"""
                 SELECT report_json
                 FROM {FACT_DAILY_REPORTS}
-                WHERE report_date = CURRENT_DATE
+                ORDER BY report_date DESC
                 LIMIT 1
             """).fetchone()
             if result and result[0]:
@@ -121,6 +128,22 @@ def _load_roster() -> pd.DataFrame:
 
     try:
         with managed_connection() as conn:
+            # Use most recent snapshot date so the app shows data even when
+            # the pipeline last ran on a historical date (testing / off-season).
+            snap_row = conn.execute(
+                f"""
+                SELECT MAX(snapshot_date) FROM {FACT_ROSTERS} WHERE team_id = ?
+            """,
+                [team_key],
+            ).fetchone()
+            if not snap_row or not snap_row[0]:
+                return STUB_ROSTER_DF.copy()
+            latest_snapshot = snap_row[0]
+            # Stats window: Monday of the snapshot week through the snapshot date.
+            import datetime as _dt
+
+            week_start = latest_snapshot - _dt.timedelta(days=latest_snapshot.weekday())
+
             df: pd.DataFrame = conn.execute(
                 f"""
                 SELECT
@@ -166,14 +189,14 @@ def _load_roster() -> pd.DataFrame:
                              ELSE 0 END AS k_bb,
                         SUM(sv) + SUM(holds) AS sv_h
                     FROM fact_player_stats_daily
-                    WHERE stat_date >= DATE_TRUNC('week', CURRENT_DATE)
+                    WHERE stat_date >= ?
                     GROUP BY player_id
                 ) s ON r.player_id = s.player_id
                 WHERE r.team_id = ?
-                  AND r.snapshot_date = CURRENT_DATE
+                  AND r.snapshot_date = ?
                 ORDER BY r.roster_slot
             """,
-                [team_key],
+                [week_start, team_key, latest_snapshot],
             ).fetchdf()
 
             if not df.empty:
@@ -249,6 +272,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         is_stale = bool(freshness.get("is_stale", False))
         generated_at = freshness.get("generated_at")
 
+        report_date = freshness.get("report_date")
         if is_offline:
             return ui.div(
                 ui.span(
@@ -260,7 +284,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         elif is_stale:
             return ui.div(
                 ui.span(
-                    f"\u26a0\ufe0f Data may be stale. Last updated: {generated_at}"
+                    f"\u26a0\ufe0f Showing most recent data (pipeline last ran: {report_date})"
                 ),
                 class_="alert alert-warning mb-0 py-1",
                 role="alert",
