@@ -32,13 +32,12 @@ jobs:
 
       - name: Deploy to shinyapps.io
         env:
+          SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
+          SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
+          SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: |
           rsconnect deploy shiny . \
-            --account ${{ secrets.SHINYAPPS_ACCOUNT }} \
-            --token ${{ secrets.SHINYAPPS_TOKEN }} \
-            --secret ${{ secrets.SHINYAPPS_SECRET }} \
-            --name fantasy-baseball-dashboard \
             --title "Fantasy Baseball Dashboard" \
             --entrypoint src/app/app.py \
             -E MOTHERDUCK_TOKEN
