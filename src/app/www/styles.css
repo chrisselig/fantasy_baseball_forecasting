@@ -1,0 +1,293 @@
+/*
+ * Baseball Savant-inspired theme for VGI Fantasy Baseball
+ * Color palette: navy #132747, teal #1a7fa1, light bg #f0f4f8
+ */
+
+/* ── Global ─────────────────────────────────────────────────────────────── */
+body {
+  background-color: #f0f4f8;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: #1a2332;
+  font-size: 0.9rem;
+}
+
+/* ── Navbar ──────────────────────────────────────────────────────────────── */
+.navbar {
+  background-color: #132747 !important;
+  border-bottom: 3px solid #1a7fa1;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.navbar .navbar-brand {
+  color: #ffffff !important;
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+}
+
+.navbar .navbar-brand span.brand-icon {
+  font-size: 1.1rem;
+  margin-right: 0.4rem;
+}
+
+.navbar .nav-link {
+  color: #b8cfe0 !important;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 0.45rem 0.9rem !important;
+  border-radius: 3px;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.navbar .nav-link:hover {
+  color: #4ec8e8 !important;
+  background-color: rgba(30, 120, 160, 0.3) !important;
+}
+
+.navbar .nav-link.active {
+  color: #4ec8e8 !important;
+  background-color: rgba(30, 120, 160, 0.2) !important;
+  border-bottom: 2px solid #1a7fa1;
+}
+
+/* ── Status banners ──────────────────────────────────────────────────────── */
+.alert {
+  border-radius: 0;
+  font-size: 0.8rem;
+  padding: 0.4rem 1rem;
+  margin-bottom: 0;
+}
+
+.alert-warning {
+  background-color: #fff8e1;
+  border: none;
+  border-left: 4px solid #f5a623;
+  color: #6b4500;
+}
+
+.alert-danger {
+  background-color: #fdecea;
+  border: none;
+  border-left: 4px solid #c62828;
+  color: #6b1111;
+}
+
+.alert-success {
+  background-color: #e8f5e9;
+  border: none;
+  border-left: 4px solid #2e7d32;
+  color: #1b4a1f;
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+.card {
+  border: 1px solid #d8e1eb;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  background-color: #ffffff;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Card headers (section titles) ───────────────────────────────────────── */
+.card-header {
+  background-color: #132747 !important;
+  color: #e4edf6 !important;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 2px dotted #1a7fa1;
+}
+
+/* ── Value boxes ─────────────────────────────────────────────────────────── */
+.bslib-value-box {
+  background-color: #132747 !important;
+  color: #e4edf6 !important;
+  border: none !important;
+  border-radius: 4px !important;
+  border-left: 3px solid #1a7fa1 !important;
+}
+
+.bslib-value-box .value-box-title {
+  color: #7ab8d4 !important;
+  font-size: 0.65rem !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.bslib-value-box .value-box-value {
+  color: #ffffff !important;
+  font-size: 1.15rem !important;
+  font-weight: 700;
+}
+
+/* ── Data tables ─────────────────────────────────────────────────────────── */
+.shiny-data-frame table,
+.shiny-table,
+table.dataTable {
+  font-size: 0.79rem !important;
+  font-family: 'IBM Plex Mono', 'Fira Code', 'Courier New', monospace;
+  width: 100% !important;
+  border-collapse: collapse;
+}
+
+.shiny-data-frame thead th,
+table.dataTable thead th {
+  background-color: #edf2f7 !important;
+  color: #132747 !important;
+  font-size: 0.68rem !important;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+  border-bottom: 2px solid #1a7fa1 !important;
+  padding: 0.4rem 0.6rem !important;
+  white-space: nowrap;
+}
+
+.shiny-data-frame tbody td,
+table.dataTable tbody td {
+  border-bottom: 1px solid #edf1f7 !important;
+  padding: 0.3rem 0.6rem !important;
+  vertical-align: middle;
+}
+
+.shiny-data-frame tbody tr:hover td,
+table.dataTable tbody tr:hover td {
+  background-color: #e8f4fb !important;
+}
+
+.shiny-data-frame tbody tr:nth-child(even) td {
+  background-color: #f8fafc;
+}
+
+/* ── Matchup status colors ───────────────────────────────────────────────── */
+.status-safe-win {
+  color: #2e7d32;
+  font-weight: 700;
+}
+
+.status-flippable {
+  color: #558b2f;
+  font-weight: 600;
+}
+
+.status-toss-up {
+  color: #e65100;
+  font-weight: 600;
+}
+
+.status-safe-loss {
+  color: #c62828;
+  font-weight: 700;
+}
+
+/* ── Win probability color coding ────────────────────────────────────────── */
+.win-high {
+  color: #2e7d32;
+  font-weight: 700;
+}
+
+.win-mid {
+  color: #f57f17;
+  font-weight: 600;
+}
+
+.win-low {
+  color: #c62828;
+  font-weight: 600;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btn-primary {
+  background-color: #1a7fa1 !important;
+  border-color: #1a7fa1 !important;
+  color: #ffffff !important;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.35rem 0.85rem;
+  border-radius: 3px;
+}
+
+.btn-primary:hover {
+  background-color: #146085 !important;
+  border-color: #146085 !important;
+}
+
+/* ── Form controls ───────────────────────────────────────────────────────── */
+.shiny-input-container label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #4a6282;
+  margin-bottom: 0.2rem;
+}
+
+select.form-select,
+select.form-control {
+  font-size: 0.8rem;
+  border-color: #c0ccd8;
+  border-radius: 3px;
+}
+
+.form-check-label {
+  font-size: 0.8rem;
+  color: #1a2332;
+}
+
+/* ── Call-up alert items ─────────────────────────────────────────────────── */
+.callup-item {
+  background-color: #fff8e1;
+  border-left: 4px solid #f5a623;
+  border-radius: 3px;
+  padding: 0.4rem 0.75rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.82rem;
+}
+
+.callup-item strong {
+  color: #132747;
+}
+
+/* ── Section legend ──────────────────────────────────────────────────────── */
+.section-legend {
+  font-size: 0.72rem;
+  padding: 0.25rem 0.5rem 0.6rem 0.5rem;
+  color: #4a6282;
+  border-bottom: 1px solid #edf1f7;
+  margin-bottom: 0.5rem;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+/* ── Tab content padding ─────────────────────────────────────────────────── */
+.tab-content {
+  padding-top: 0.75rem;
+}
+
+/* ── Savant-style section divider ────────────────────────────────────────── */
+.savant-divider {
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    #1a7fa1 0px,
+    #1a7fa1 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  margin: 0.5rem 0;
+  opacity: 0.6;
+}
