@@ -710,6 +710,36 @@ def print_report(report: dict, conn: duckdb.DuckDBPyConnection) -> None:
     print()
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _clear_tables(conn: duckdb.DuckDBPyConnection) -> None:
+    """DELETE all rows from every table written by this seeder.
+
+    Used with --clear to guarantee a clean slate before seeding.
+    Without this, a previous seed run with a later date (e.g. today)
+    would still be returned first by ORDER BY report_date DESC, masking
+    the newly seeded historical date.
+    """
+    from src.db.schema import FACT_DAILY_REPORTS, FACT_WAIVER_SCORES  # noqa: PLC0415
+
+    tables = [
+        DIM_PLAYERS,
+        FACT_ROSTERS,
+        FACT_PLAYER_STATS_DAILY,
+        FACT_MATCHUPS,
+        FACT_DAILY_REPORTS,
+        FACT_WAIVER_SCORES,
+    ]
+    for tbl in tables:
+        try:
+            conn.execute(f"DELETE FROM {tbl}")
+            print(f"  Cleared {tbl}.")
+        except Exception as exc:
+            # Table may not exist yet — that's fine
+            print(f"  Could not clear {tbl}: {exc}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -733,6 +763,11 @@ def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     parser.add_argument("--json", action="store_true", help="Dump raw report JSON")
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="DELETE all rows from seeded tables before inserting (ensures clean state)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -792,6 +827,8 @@ def main() -> None:
     else:
         _ensure_motherduck_db()
         with managed_connection() as conn:
+            if args.clear:
+                _clear_tables(conn)
             print("\n  Populating MotherDuck...")
             populate_db(
                 conn,
