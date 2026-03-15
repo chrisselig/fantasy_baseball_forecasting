@@ -92,6 +92,11 @@ module = [
 ]
 ignore_missing_imports = true
 
+# Scripts are standalone executables — relax strict generic typing requirements
+[[tool.mypy.overrides]]
+module = ["scripts.*"]
+disallow_any_generics = false
+
 # ── coverage ─────────────────────────────────────────────────────────────────
 
 [tool.coverage.run]
