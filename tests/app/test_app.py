@@ -123,3 +123,45 @@ def test_stub_callup_alerts_structure() -> None:
         assert "days_since_callup" in alert
         assert "team" in alert
         assert "from_level" in alert
+
+
+def test_win_pct_class_high() -> None:
+    from src.app.server import _win_pct_class
+
+    assert _win_pct_class(0.75) == "win-high"
+    assert _win_pct_class(0.65) == "win-high"
+
+
+def test_win_pct_class_mid() -> None:
+    from src.app.server import _win_pct_class
+
+    assert _win_pct_class(0.50) == "win-mid"
+    assert _win_pct_class(0.35) == "win-mid"
+
+
+def test_win_pct_class_low() -> None:
+    from src.app.server import _win_pct_class
+
+    assert _win_pct_class(0.10) == "win-low"
+    assert _win_pct_class(0.34) == "win-low"
+
+
+def test_status_class_mapping() -> None:
+    from src.app.server import _STATUS_CLASS
+
+    assert _STATUS_CLASS["safe_win"] == "status-safe-win"
+    assert _STATUS_CLASS["flippable"] == "status-flippable"
+    assert _STATUS_CLASS["toss_up"] == "status-toss-up"
+    assert _STATUS_CLASS["safe_loss"] == "status-safe-loss"
+
+
+def test_html_table_returns_tag() -> None:
+    from htmltools import Tag
+
+    from src.app.server import _html_table
+
+    table = _html_table(["Col A", "Col B"], [["r1c1", "r1c2"], ["r2c1", "r2c2"]])
+    assert isinstance(table, Tag)
+    html_str = str(table)
+    assert "Col A" in html_str
+    assert "r1c1" in html_str

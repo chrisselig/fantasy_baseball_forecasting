@@ -249,6 +249,43 @@ def _fmt_stat(v: Any) -> str:
     return str(v)
 
 
+_STATUS_CLASS: dict[str, str] = {
+    "safe_win": "status-safe-win",
+    "flippable": "status-flippable",
+    "toss_up": "status-toss-up",
+    "safe_loss": "status-safe-loss",
+}
+
+
+def _win_pct_class(pct: float) -> str:
+    """Return CSS class based on win probability (0–1)."""
+    if pct >= 0.65:
+        return "win-high"
+    if pct >= 0.35:
+        return "win-mid"
+    return "win-low"
+
+
+def _html_table(headers: list[str], rows: list[list[Any]]) -> Tag:
+    """Build a styled HTML table matching the Savant theme."""
+    th_cells = [ui.tags.th(h) for h in headers]
+    tbody_rows: list[Any] = []
+    for row in rows:
+        td_cells = []
+        for cell in row:
+            if isinstance(cell, Tag):
+                td_cells.append(ui.tags.td(cell))
+            else:
+                td_cells.append(ui.tags.td(str(cell)))
+        tbody_rows.append(ui.tags.tr(*td_cells))
+    return ui.tags.table(
+        ui.tags.thead(ui.tags.tr(*th_cells)),
+        ui.tags.tbody(*tbody_rows),
+        class_="shiny-data-frame table table-sm",
+        style="width:100%;",
+    )
+
+
 def server(input: Inputs, output: Outputs, session: Session) -> None:
     """Shiny server function wiring reactive calcs and output renderers."""
 
@@ -371,21 +408,36 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         rows = [{"Slot": slot, "Player ID": pid} for slot, pid in lineup.items()]
         return pd.DataFrame(rows)
 
-    @render.data_frame
-    def matchup_scoreboard() -> pd.DataFrame:
+    @render.ui
+    def matchup_scoreboard_ui() -> Tag:
         df = matchup_data()
         if df.empty:
-            return pd.DataFrame(columns=["Category", "Mine", "Opponent", "Win%"])
-        result = pd.DataFrame(
-            {
-                "Category": df["category"].str.upper(),
-                "Mine": df["my_value"].apply(_fmt_stat),
-                "Opponent": df["opp_value"].apply(_fmt_stat),
-                "Win%": df["win_prob"].apply(lambda p: f"{p * 100:.0f}%"),
-                "Status": df["status"],
-            }
-        )
-        return result
+            return ui.p(
+                "No matchup data available.", style="padding:0.5rem;color:#666;"
+            )
+        headers = ["Category", "Mine", "Opp", "Win%", "Status"]
+        rows: list[list[Any]] = []
+        for _, r in df.iterrows():
+            status = str(r.get("status", ""))
+            win_prob = float(r.get("win_prob", 0.5))
+            status_cell = ui.tags.span(
+                status.replace("_", " ").title(),
+                class_=_STATUS_CLASS.get(status, ""),
+            )
+            win_cell = ui.tags.span(
+                f"{win_prob * 100:.0f}%",
+                class_=_win_pct_class(win_prob),
+            )
+            rows.append(
+                [
+                    str(r.get("category", "")).upper(),
+                    _fmt_stat(r.get("my_value", "")),
+                    _fmt_stat(r.get("opp_value", "")),
+                    win_cell,
+                    status_cell,
+                ]
+            )
+        return _html_table(headers, rows)
 
     @render.data_frame
     def adds_table() -> pd.DataFrame:
@@ -438,23 +490,42 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
 
     # Tab 2: Matchup Detail
 
-    @render.data_frame
-    def matchup_detail_table() -> pd.DataFrame:
+    @render.ui
+    def matchup_detail_ui() -> Tag:
         df = matchup_data()
         if df.empty:
-            return pd.DataFrame()
-        result = pd.DataFrame(
-            {
-                "Category": df["category"].str.upper(),
-                "My Value": df["my_value"],
-                "Opp Value": df["opp_value"],
-                "Leading": df["my_leads"].map({True: "Yes", False: "No"}),
-                "Margin %": df["margin_pct"].apply(lambda p: f"{p * 100:.1f}%"),
-                "Win Prob": df["win_prob"].apply(lambda p: f"{p * 100:.0f}%"),
-                "Status": df["status"],
-            }
-        )
-        return result
+            return ui.p(
+                "No matchup data available.", style="padding:0.5rem;color:#666;"
+            )
+        headers = ["Category", "Mine", "Opp", "Leading", "Margin", "Win%", "Status"]
+        rows: list[list[Any]] = []
+        for _, r in df.iterrows():
+            status = str(r.get("status", ""))
+            win_prob = float(r.get("win_prob", 0.5))
+            margin = float(r.get("margin_pct", 0.0))
+            leading = bool(r.get("my_leads", False))
+            status_cell = ui.tags.span(
+                status.replace("_", " ").title(),
+                class_=_STATUS_CLASS.get(status, ""),
+            )
+            win_cell = ui.tags.span(
+                f"{win_prob * 100:.0f}%",
+                class_=_win_pct_class(win_prob),
+            )
+            rows.append(
+                [
+                    str(r.get("category", "")).upper(),
+                    _fmt_stat(r.get("my_value", "")),
+                    _fmt_stat(r.get("opp_value", "")),
+                    ui.tags.span("▲ Yes", style="color:#2e7d32;font-weight:700;")
+                    if leading
+                    else ui.tags.span("▼ No", style="color:#c62828;font-weight:700;"),
+                    f"{margin * 100:.1f}%",
+                    win_cell,
+                    status_cell,
+                ]
+            )
+        return _html_table(headers, rows)
 
     # Tab 3: Waiver Wire
 

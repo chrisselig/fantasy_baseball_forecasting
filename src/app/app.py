@@ -7,6 +7,7 @@ Entry point for the Shiny application.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from shiny import App
 
@@ -17,4 +18,5 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 logger.info("Starting Fantasy Baseball app")
-app = App(app_ui, server)
+_WWW = Path(__file__).parent / "www"
+app = App(app_ui, server, static_assets=_WWW)
