@@ -39,7 +39,6 @@ jobs:
         run: |
           rsconnect deploy shiny . \
             --title "Fantasy Baseball Dashboard" \
-            --entrypoint src/app/app.py \
             -E MOTHERDUCK_TOKEN
 
 # ── GitHub Secrets required ───────────────────────────────────────────────────
