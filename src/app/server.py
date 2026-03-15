@@ -85,11 +85,19 @@ def _load_data_freshness() -> dict[str, object]:
                 }
     except Exception as exc:
         logger.warning("Could not load data freshness: %s", exc)
+        return {
+            "generated_at": None,
+            "report_date": None,
+            "is_stale": False,
+            "is_offline": True,
+            "error": str(exc),
+        }
     return {
         "generated_at": None,
         "report_date": None,
         "is_stale": False,
         "is_offline": True,
+        "error": "No report found in database.",
     }
 
 
@@ -274,10 +282,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
 
         report_date = freshness.get("report_date")
         if is_offline:
+            error_detail = str(freshness.get("error", ""))
+            msg = "\u26a0\ufe0f Offline \u2014 showing cached data."
+            if error_detail:
+                msg += f" ({error_detail[:120]})"
             return ui.div(
-                ui.span(
-                    "\u26a0\ufe0f Offline \u2014 showing cached data. Connect to MotherDuck to refresh."
-                ),
+                ui.span(msg),
                 class_="alert alert-danger mb-0 py-1",
                 role="alert",
             )

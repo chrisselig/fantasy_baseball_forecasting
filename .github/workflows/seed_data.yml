@@ -1,0 +1,54 @@
+name: Seed MotherDuck Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_date:
+        description: "Simulate run date (YYYY-MM-DD). Leave blank for today."
+        required: false
+        default: "2025-06-11"
+      seed:
+        description: "Random seed for roster assignment"
+        required: false
+        default: "42"
+
+jobs:
+  seed:
+    name: Seed MotherDuck with real 2025 MLB stats
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -e "." pandas-stubs
+
+      - name: Seed MotherDuck
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: |
+          DATE_ARG=""
+          if [ -n "${{ github.event.inputs.run_date }}" ]; then
+            DATE_ARG="--date ${{ github.event.inputs.run_date }}"
+          fi
+          python scripts/seed_motherduck_2025.py \
+            --clear \
+            --seed ${{ github.event.inputs.seed }} \
+            $DATE_ARG \
+            --verbose
+
+# ── Usage ─────────────────────────────────────────────────────────────────────
+# Trigger manually from:
+#   github.com/<owner>/<repo>/actions/workflows/seed_data.yml
+#
+# Default seeds with 2025-06-11 (mid-season, shows stale banner in app).
+# To seed with today's date (green "fresh" banner), clear run_date input.
+#
+# Requires MOTHERDUCK_TOKEN GitHub Actions secret.
