@@ -1,16 +1,22 @@
-name: Seed MotherDuck Data
+name: Seed MotherDuck (2025 simulation)
 
 on:
+  schedule:
+    # Run daily at 9 am MT (3 pm UTC) — same cadence as the real pipeline
+    - cron: '0 15 * * *'
   workflow_dispatch:
     inputs:
       run_date:
-        description: "Simulate run date (YYYY-MM-DD). Leave blank for today."
+        description: "Simulate run date (YYYY-MM-DD)"
         required: false
         default: "2025-06-11"
       seed:
         description: "Random seed for roster assignment"
         required: false
         default: "42"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   seed:
@@ -34,21 +40,28 @@ jobs:
         env:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: |
-          DATE_ARG=""
-          if [ -n "${{ github.event.inputs.run_date }}" ]; then
-            DATE_ARG="--date ${{ github.event.inputs.run_date }}"
+          # Use explicit date input if provided (workflow_dispatch),
+          # otherwise default to 2025-06-11 for the scheduled run.
+          RUN_DATE="${{ github.event.inputs.run_date }}"
+          if [ -z "$RUN_DATE" ]; then
+            RUN_DATE="2025-06-11"
+          fi
+          SEED_VAL="${{ github.event.inputs.seed }}"
+          if [ -z "$SEED_VAL" ]; then
+            SEED_VAL="42"
           fi
           python scripts/seed_motherduck_2025.py \
             --clear \
-            --seed ${{ github.event.inputs.seed }} \
-            $DATE_ARG \
+            --date "$RUN_DATE" \
+            --seed "$SEED_VAL" \
             --verbose
 
-# ── Usage ─────────────────────────────────────────────────────────────────────
-# Trigger manually from:
-#   github.com/<owner>/<repo>/actions/workflows/seed_data.yml
+# ── Purpose ───────────────────────────────────────────────────────────────────
+# Simulates the daily pipeline during the 2025/2026 offseason for testing.
+# Clears and re-seeds MotherDuck with real 2025 FanGraphs stats tagged to
+# 2025-06-11, so the Shiny app shows live data with a yellow stale banner.
 #
-# Default seeds with 2025-06-11 (mid-season, shows stale banner in app).
-# To seed with today's date (green "fresh" banner), clear run_date input.
+# Replace with daily_pipeline.yml once the 2026 season starts and Yahoo
+# OAuth credentials are available.
 #
-# Requires MOTHERDUCK_TOKEN GitHub Actions secret.
+# Requires: MOTHERDUCK_TOKEN GitHub Actions secret.

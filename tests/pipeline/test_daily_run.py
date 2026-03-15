@@ -104,15 +104,21 @@ def test_my_team_key_from_config(settings, monkeypatch):
 
 
 def test_my_team_key_from_env_var(settings, monkeypatch):
-    """Falls back to YAHOO_TEAM_ID when config is empty."""
+    """Falls back to YAHOO_TEAM_ID when config my_team_key is empty."""
+    from dataclasses import replace
+
+    empty_settings = replace(settings, my_team_key="")
     monkeypatch.setenv("YAHOO_TEAM_ID", "7")
-    assert _my_team_key(settings) == "422.l.87941.t.7"
+    assert _my_team_key(empty_settings) == "422.l.87941.t.7"
 
 
 def test_my_team_key_default_when_no_env(settings, monkeypatch):
-    """Uses team id '1' when no env var is set."""
+    """Uses team id '1' when config is empty and no env var is set."""
+    from dataclasses import replace
+
+    empty_settings = replace(settings, my_team_key="")
     monkeypatch.delenv("YAHOO_TEAM_ID", raising=False)
-    key = _my_team_key(settings)
+    key = _my_team_key(empty_settings)
     assert key == "422.l.87941.t.1"
 
 
