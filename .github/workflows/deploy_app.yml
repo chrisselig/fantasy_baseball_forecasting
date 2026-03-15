@@ -38,6 +38,7 @@ jobs:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: |
           rsconnect deploy shiny . \
+            --name fantasy-baseball-dashboard \
             --title "Fantasy Baseball Dashboard" \
             --entrypoint src/app/app.py \
             -E MOTHERDUCK_TOKEN
