@@ -1,7 +1,7 @@
 # Runtime dependencies for the Shiny app on shinyapps.io.
 # This app is READ-ONLY — it only reads from MotherDuck.
 # Pipeline deps (yahoo-oauth, pybaseball, requests) are intentionally excluded.
-duckdb>=1.1.0
+duckdb==1.4.4
 pandas>=2.2.0
 numpy>=1.26.0
 pyyaml>=6.0
