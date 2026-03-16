@@ -42,6 +42,7 @@ FACT_WAIVER_SCORES = "fact_waiver_scores"
 FACT_PROJECTIONS = "fact_projections"
 FACT_DAILY_REPORTS = "fact_daily_reports"
 FACT_PIPELINE_RUNS = "fact_pipeline_runs"
+FACT_PLAYER_NEWS = "fact_player_news"
 
 ALL_TABLES = [
     DIM_PLAYERS,
@@ -55,6 +56,7 @@ ALL_TABLES = [
     FACT_PROJECTIONS,
     FACT_DAILY_REPORTS,
     FACT_PIPELINE_RUNS,
+    FACT_PLAYER_NEWS,
 ]
 
 # ── DDL statements ────────────────────────────────────────────────────────────
@@ -275,6 +277,21 @@ CREATE TABLE IF NOT EXISTS {FACT_PIPELINE_RUNS} (
 );
 """
 
+_DDL_FACT_PLAYER_NEWS = f"""
+CREATE TABLE IF NOT EXISTS {FACT_PLAYER_NEWS} (
+    id              VARCHAR PRIMARY KEY,   -- MD5 hash of player_id + headline (dedup key)
+    player_id       VARCHAR NOT NULL,
+    player_name     VARCHAR NOT NULL,
+    headline        VARCHAR NOT NULL,
+    url             VARCHAR,
+    source          VARCHAR,               -- News outlet name
+    published_at    TIMESTAMP,
+    sentiment_label VARCHAR NOT NULL,      -- 'Good' | 'Informative' | 'Bad'
+    sentiment_score DOUBLE NOT NULL,       -- VADER compound score in [-1.0, 1.0]
+    fetched_at      TIMESTAMP NOT NULL
+);
+"""
+
 # Creation order matters — dimensions before facts that reference them
 _DDL_IN_ORDER = [
     _DDL_DIM_PLAYERS,
@@ -288,6 +305,7 @@ _DDL_IN_ORDER = [
     _DDL_FACT_PROJECTIONS,
     _DDL_FACT_PIPELINE_RUNS,  # must exist before fact_daily_reports references it
     _DDL_FACT_DAILY_REPORTS,
+    _DDL_FACT_PLAYER_NEWS,
 ]
 
 
