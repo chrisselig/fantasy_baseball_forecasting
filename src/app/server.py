@@ -1265,7 +1265,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     headline,
                     href=url,
                     target="_blank",
-                    style="color:#132747;text-decoration:none;font-weight:600;"
+                    rel="noopener noreferrer",
+                    style="color:#1a7fa1;text-decoration:underline;font-weight:600;"
                     "font-size:0.88rem;",
                 )
                 if url
