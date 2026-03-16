@@ -22,6 +22,9 @@ dependencies = [
     "pybaseball>=2.2.7",
     # Shiny app
     "shiny>=1.0.0",
+    # News + sentiment
+    "feedparser>=6.0",
+    "nltk>=3.8",
 ]
 
 [project.optional-dependencies]
@@ -89,6 +92,8 @@ module = [
     "yahoo_oauth.*",
     "shiny.*",
     "rsconnect.*",
+    "feedparser.*",
+    "nltk.*",
 ]
 ignore_missing_imports = true
 

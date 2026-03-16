@@ -20,6 +20,7 @@ from shiny import Inputs, Outputs, Session, reactive, render, ui
 from src.analysis.hot_cold import annotate_with_streaks, match_win_probability
 from src.app.stubs import (
     STUB_DAILY_REPORT,
+    STUB_NEWS_DF,
     STUB_ROSTER_DF,
     STUB_TRADES,
     STUB_TRANSACTIONS_DF,
@@ -30,6 +31,7 @@ from src.db.connection import managed_connection
 from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
+    FACT_PLAYER_NEWS,
     FACT_PLAYER_STATS_DAILY,
     FACT_ROSTERS,
     FACT_TRANSACTIONS,
@@ -424,6 +426,30 @@ def _load_transactions() -> pd.DataFrame:
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load transactions from DB: %s", exc)
     return STUB_TRANSACTIONS_DF.copy()
+
+
+def _load_news(days: int = 3) -> pd.DataFrame:
+    """Load recent player news from MotherDuck, falling back to stubs.
+
+    Args:
+        days: Number of days back to load news for.
+    """
+    try:
+        with managed_connection() as conn:
+            df: pd.DataFrame = conn.execute(f"""
+                SELECT
+                    id, player_id, player_name, headline, url,
+                    source, published_at, sentiment_label, sentiment_score
+                FROM {FACT_PLAYER_NEWS}
+                WHERE fetched_at >= NOW() - INTERVAL '{days} days'
+                ORDER BY published_at DESC
+                LIMIT 200
+            """).fetchdf()
+            if not df.empty:
+                return df
+    except (duckdb.Error, Exception) as exc:
+        logger.warning("Could not load news from DB: %s", exc)
+    return STUB_NEWS_DF.copy()
 
 
 # ── Server ─────────────────────────────────────────────────────────────────
@@ -1182,6 +1208,103 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 )
             )
         return ui.div(*cards)
+
+    # ── News ──────────────────────────────────────────────────────────────
+
+    @reactive.calc
+    def news_data() -> pd.DataFrame:
+        _refresh_counter()
+        return _load_news()
+
+    @reactive.effect
+    def _populate_news_player_filter() -> None:
+        """Populate the player dropdown with names from loaded news."""
+        df = news_data()
+        names = (
+            sorted(df["player_name"].dropna().unique().tolist()) if not df.empty else []
+        )
+        choices: dict[str, str] = {"All": "All Players"}
+        choices.update({n: n for n in names})
+        ui.update_select("news_player_filter", choices=choices)
+
+    @render.ui
+    def news_ui() -> Tag:
+        df = news_data()
+
+        sentiment_filter = str(input.news_sentiment_filter())
+        player_filter = str(input.news_player_filter())
+
+        if not df.empty:
+            if sentiment_filter != "All":
+                df = df[df["sentiment_label"] == sentiment_filter]
+            if player_filter != "All":
+                df = df[df["player_name"] == player_filter]
+
+        if df.empty:
+            return ui.div("No news available.", style="color:#8096b0;padding:1rem;")
+
+        _sentiment_style: dict[str, tuple[str, str]] = {
+            "Good": ("#2e7d32", "✅ Good"),
+            "Bad": ("#c62828", "🚨 Bad"),
+            "Informative": ("#1a7fa1", "ℹ️ Informative"),
+        }
+
+        cards: list[Any] = []
+        for _, row in df.iterrows():
+            label = str(row.get("sentiment_label", "Informative"))
+            color, badge_text = _sentiment_style.get(label, ("#8096b0", label))
+            player = str(row.get("player_name", ""))
+            headline = str(row.get("headline", ""))
+            source = str(row.get("source", ""))
+            url = str(row.get("url", ""))
+            pub = row.get("published_at", "")
+            pub_str = str(pub)[:10] if pub else ""
+
+            headline_el: Any = (
+                ui.tags.a(
+                    headline,
+                    href=url,
+                    target="_blank",
+                    style="color:#132747;text-decoration:none;font-weight:600;"
+                    "font-size:0.88rem;",
+                )
+                if url
+                else ui.tags.span(
+                    headline,
+                    style="color:#132747;font-weight:600;font-size:0.88rem;",
+                )
+            )
+
+            cards.append(
+                ui.div(
+                    ui.div(
+                        ui.tags.span(
+                            badge_text,
+                            style=f"background:{color};color:#fff;padding:2px 8px;"
+                            "border-radius:10px;font-size:0.72rem;font-weight:700;"
+                            "margin-right:0.5rem;",
+                        ),
+                        ui.tags.span(
+                            player,
+                            style="font-size:0.78rem;font-weight:700;color:#1a7fa1;"
+                            "margin-right:0.5rem;",
+                        ),
+                        ui.tags.span(
+                            f"{source}  ·  {pub_str}" if source else pub_str,
+                            style="font-size:0.73rem;color:#8096b0;",
+                        ),
+                        style="margin-bottom:4px;",
+                    ),
+                    headline_el,
+                    style="padding:0.55rem 0.85rem;border-top:1px solid #edf1f7;"
+                    "background:#fff;",
+                )
+            )
+
+        return ui.div(
+            *cards,
+            style="border:1px solid #d8e1eb;border-radius:6px;overflow:hidden;",
+        )
 
     # ── Manual refresh ────────────────────────────────────────────────────
 

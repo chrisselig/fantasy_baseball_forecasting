@@ -10,7 +10,8 @@ Tabs (in order):
   3. Waiver Wire
   4. Roster
   5. Transactions
-  6. Trades
+  6. News
+  7. Trades
 """
 
 from __future__ import annotations
@@ -221,7 +222,45 @@ app_ui = ui.page_navbar(
             col_widths=[12],
         ),
     ),
-    # ── Tab 6: Trades ─────────────────────────────────────────────────────
+    # ── Tab 6: News ───────────────────────────────────────────────────────
+    ui.nav_panel(
+        "News",
+        ui.layout_columns(
+            _card(
+                "Roster Player News",
+                _note(
+                    "Recent baseball news for your active roster players. "
+                    "Sentiment is scored by VADER NLP: ✅ Good = positive news "
+                    "(hot streak, return from IL), 🚨 Bad = negative news "
+                    "(injury, demotion, slump), ℹ️ Informative = neutral coverage. "
+                    "Headlines link to the original article."
+                ),
+                ui.layout_columns(
+                    ui.input_select(
+                        "news_sentiment_filter",
+                        "Sentiment",
+                        choices={
+                            "All": "All",
+                            "Good": "✅ Good",
+                            "Informative": "ℹ️ Informative",
+                            "Bad": "🚨 Bad",
+                        },
+                        selected="All",
+                    ),
+                    ui.input_select(
+                        "news_player_filter",
+                        "Player",
+                        choices={"All": "All Players"},
+                        selected="All",
+                    ),
+                    col_widths=[3, 4],
+                ),
+                ui.output_ui("news_ui"),
+            ),
+            col_widths=[12],
+        ),
+    ),
+    # ── Tab 7: Trades ─────────────────────────────────────────────────────
     ui.nav_panel(
         "Trades",
         ui.layout_columns(
