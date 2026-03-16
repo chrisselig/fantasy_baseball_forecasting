@@ -567,3 +567,156 @@ def test_build_daily_report_is_json_serializable(config: object) -> None:
     # Round-trip check
     parsed = json.loads(serialized)
     assert parsed["lineup"] == lineup
+
+
+# ---------------------------------------------------------------------------
+# 8. recommend_adds: enriched output fields present
+# ---------------------------------------------------------------------------
+
+
+def _make_enriched_waiver_df() -> pd.DataFrame:
+    """Waiver DF with position, streak, callup, and category_scores fields."""
+    return pd.DataFrame(
+        [
+            {
+                "player_id": "fa_sp",
+                "overall_score": 8.0,
+                "category_scores": json.dumps({"k": 2.0, "w": 1.5}),
+                "recommended_drop_id": "bench_sp",
+                "is_callup": False,
+                "days_since_callup": float("nan"),
+                "position": "SP",
+                "streak": "🔥 Hot",
+            }
+        ]
+    )
+
+
+def _make_enriched_roster_df() -> pd.DataFrame:
+    """Roster DF with position, streak, and overall_score fields."""
+    return pd.DataFrame(
+        [
+            {
+                "player_id": "bench_sp",
+                "slot": "BN",
+                "eligible_positions": ["SP"],
+                "overall_score": 2.0,
+                "position": "SP",
+                "streak": "❄️ Cold",
+            }
+        ]
+    )
+
+
+def test_recommend_adds_enriched_fields_present(config: object) -> None:
+    """Each add dict must contain the new enrichment keys."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = _make_enriched_waiver_df()
+    roster = _make_enriched_roster_df()
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    assert len(adds) == 1
+    add = adds[0]
+    required_keys = {
+        "add_player_id",
+        "drop_player_id",
+        "score",
+        "reason",
+        "categories_improved",
+        "add_position",
+        "add_streak",
+        "add_callup_note",
+        "drop_position",
+        "drop_streak",
+        "matchup_context",
+    }
+    missing = required_keys - set(add.keys())
+    assert not missing, f"Missing enrichment keys: {missing}"
+
+
+def test_recommend_adds_position_populated(config: object) -> None:
+    """add_position and drop_position should reflect the position column."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = _make_enriched_waiver_df()
+    roster = _make_enriched_roster_df()
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    assert adds[0]["add_position"] == "SP"
+    assert adds[0]["drop_position"] == "SP"
+
+
+def test_recommend_adds_streak_populated(config: object) -> None:
+    """add_streak and drop_streak should reflect the streak column."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = _make_enriched_waiver_df()
+    roster = _make_enriched_roster_df()
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    assert adds[0]["add_streak"] == "🔥 Hot"
+    assert adds[0]["drop_streak"] == "❄️ Cold"
+
+
+def test_recommend_adds_callup_note_for_recent_callup(config: object) -> None:
+    """add_callup_note should be set when is_callup=True and days_since_callup is populated."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = pd.DataFrame(
+        [
+            {
+                "player_id": "fa_callup",
+                "overall_score": 7.0,
+                "category_scores": json.dumps({"sb": 2.0}),
+                "recommended_drop_id": "bench_of",
+                "is_callup": True,
+                "days_since_callup": 3.0,
+                "position": "OF",
+                "streak": "—",
+            }
+        ]
+    )
+    roster = pd.DataFrame(
+        [
+            {
+                "player_id": "bench_of",
+                "slot": "BN",
+                "eligible_positions": ["OF"],
+                "overall_score": 1.5,
+                "position": "OF",
+                "streak": "—",
+            }
+        ]
+    )
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+    assert len(adds) == 1
+    assert "3" in str(adds[0]["add_callup_note"]), (
+        f"Expected days_since_callup in callup note, got: {adds[0]['add_callup_note']}"
+    )
+
+
+def test_recommend_adds_matchup_context_with_matchup_df(config: object) -> None:
+    """matchup_context should be non-empty when a matchup_df is supplied."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = _make_enriched_waiver_df()
+    roster = _make_enriched_roster_df()
+    matchup = _make_matchup_df({"k": "flippable_loss", "w": "toss_up"})
+    adds = recommend_adds(
+        waiver, roster, acquisitions_used=0, config=config, matchup_df=matchup
+    )
+    assert len(adds) == 1
+    assert adds[0]["matchup_context"] != "", (
+        "matchup_context should be populated when matchup_df is provided"
+    )

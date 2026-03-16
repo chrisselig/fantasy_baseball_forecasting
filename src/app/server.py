@@ -33,6 +33,7 @@ from src.db.schema import (
     FACT_DAILY_REPORTS,
     FACT_PLAYER_NEWS,
     FACT_PLAYER_STATS_DAILY,
+    FACT_PROJECTIONS,
     FACT_ROSTERS,
     FACT_TRANSACTIONS,
     FACT_WAIVER_SCORES,
@@ -428,6 +429,31 @@ def _load_transactions() -> pd.DataFrame:
     return STUB_TRANSACTIONS_DF.copy()
 
 
+def _load_projections() -> pd.DataFrame:
+    """Load the most recent season projections from MotherDuck.
+
+    Returns one row per player (latest projection_date), falling back to an
+    empty DataFrame when unavailable (projections are optional enrichment).
+    """
+    try:
+        with managed_connection() as conn:
+            df: pd.DataFrame = conn.execute(f"""
+                SELECT
+                    player_id, source,
+                    proj_h, proj_hr, proj_sb, proj_bb,
+                    proj_avg, proj_ops, proj_fpct,
+                    proj_ip, proj_w, proj_k, proj_sv_h, proj_whip, proj_k_bb
+                FROM {FACT_PROJECTIONS}
+                WHERE projection_date = (
+                    SELECT MAX(projection_date) FROM {FACT_PROJECTIONS}
+                )
+            """).fetchdf()
+            return df
+    except (duckdb.Error, Exception) as exc:
+        logger.warning("Could not load projections from DB: %s", exc)
+    return pd.DataFrame()
+
+
 def _load_news(days: int = 3) -> pd.DataFrame:
     """Load recent player news from MotherDuck, falling back to stubs.
 
@@ -527,6 +553,11 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         elif streak_filter == "❄️ Cold":
             df = df[df["streak"] == "❄️ Cold"]
         return df.reset_index(drop=True)
+
+    @reactive.calc
+    def projection_data() -> pd.DataFrame:
+        _refresh_counter()
+        return _load_projections()
 
     @reactive.calc
     def transactions_data() -> pd.DataFrame:
@@ -728,12 +759,14 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             )
         return _html_table(headers, rows)
 
-    @render.data_frame
-    def adds_table() -> pd.DataFrame:
+    @render.ui
+    def adds_table() -> Tag:
         report = daily_report()
         raw_adds = report.get("adds", [])
         if not isinstance(raw_adds, list) or len(raw_adds) == 0:
-            return pd.DataFrame(columns=["Add", "Drop", "Score", "Reason", "Improves"])
+            return ui.p(
+                "No add recommendations today.", style="color:#888;padding:0.5rem;"
+            )
 
         # Build ID→name lookup from roster (drops) and waiver wire (adds)
         id_to_name: dict[str, str] = {}
@@ -752,24 +785,229 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 if pid and name:
                     id_to_name[pid] = name
 
-        rows_out: list[dict[str, Any]] = []
+        # Merge in live projections (keyed by player_id)
+        proj_df = projection_data()
+        proj_lookup: dict[str, dict[str, Any]] = {}
+        if not proj_df.empty and "player_id" in proj_df.columns:
+            for _, row in proj_df.iterrows():
+                proj_lookup[str(row["player_id"])] = {str(k): v for k, v in row.to_dict().items()}
+
+        def _proj_row(
+            player_id: str, override: dict[str, Any] | None
+        ) -> dict[str, Any]:
+            """Return projection dict: live DB > stub override > empty."""
+            if player_id in proj_lookup:
+                return proj_lookup[player_id]
+            if override and isinstance(override, dict):
+                return override
+            return {}
+
+        def _proj_stats_html(proj: dict[str, Any], is_pitcher: bool) -> Tag:
+            """Render a compact row of projection stat boxes."""
+            if not proj:
+                return ui.tags.span(
+                    "No projections available", style="color:#888;font-size:0.78rem;"
+                )
+            source = str(proj.get("source", "Projection"))
+            boxes: list[Any] = []
+            if is_pitcher:
+                pairs = [
+                    ("K", "proj_k"),
+                    ("W", "proj_w"),
+                    ("SV+H", "proj_sv_h"),
+                    ("WHIP", "proj_whip"),
+                    ("K/BB", "proj_k_bb"),
+                ]
+            else:
+                pairs = [
+                    ("AVG", "proj_avg"),
+                    ("OPS", "proj_ops"),
+                    ("HR", "proj_hr"),
+                    ("SB", "proj_sb"),
+                    ("H", "proj_h"),
+                    ("BB", "proj_bb"),
+                ]
+            for label, key in pairs:
+                raw = proj.get(key)
+                if raw is None:
+                    continue
+                try:
+                    fval = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                import math as _math
+
+                if _math.isnan(fval):
+                    continue
+                if key in ("proj_avg", "proj_ops", "proj_whip", "proj_fpct"):
+                    display = f"{fval:.3f}"
+                elif key == "proj_k_bb":
+                    display = f"{fval:.2f}"
+                else:
+                    display = str(int(round(fval)))
+                boxes.append(
+                    ui.tags.span(
+                        ui.tags.span(
+                            label,
+                            style="font-size:0.6rem;color:#7ab8d4;font-weight:700;display:block;",
+                        ),
+                        ui.tags.span(
+                            display,
+                            style="font-size:0.88rem;font-weight:700;color:#fff;",
+                        ),
+                        style=(
+                            "display:inline-flex;flex-direction:column;align-items:center;"
+                            "background:#132747;border-radius:4px;padding:3px 8px;margin-right:5px;"
+                        ),
+                    )
+                )
+            if not boxes:
+                return ui.tags.span(
+                    "No projection data", style="color:#888;font-size:0.78rem;"
+                )
+            return ui.tags.div(
+                ui.tags.span(
+                    f"{source} projections: ",
+                    style="font-size:0.7rem;color:#8ab;margin-right:4px;",
+                ),
+                *boxes,
+                style="display:flex;flex-wrap:wrap;align-items:center;margin-top:4px;",
+            )
+
+        cards: list[Any] = []
         for item in raw_adds:
             a: dict[str, Any] = item if isinstance(item, dict) else {}
             add_id = str(a.get("add_player_id", ""))
             drop_id = str(a.get("drop_player_id", ""))
+            add_name = id_to_name.get(add_id, add_id)
+            drop_name = id_to_name.get(drop_id, drop_id)
+            score = a.get("score", 0.0)
             cats = a.get("categories_improved", [])
-            rows_out.append(
-                {
-                    "Add": id_to_name.get(add_id, add_id),
-                    "Drop": id_to_name.get(drop_id, drop_id),
-                    "Score": a.get("score", ""),
-                    "Reason": str(a.get("reason", "")),
-                    "Improves": ", ".join(cats)
-                    if isinstance(cats, list)
-                    else str(cats),
-                }
+            cat_labels = [
+                _CATEGORY_META.get(c, {}).get("label", c.upper())
+                for c in (cats if isinstance(cats, list) else [])
+            ]
+            add_pos = str(a.get("add_position", ""))
+            drop_pos = str(a.get("drop_position", ""))
+            add_streak = str(a.get("add_streak", "—"))
+            drop_streak = str(a.get("drop_streak", "—"))
+            callup_note = str(a.get("add_callup_note", ""))
+            matchup_ctx = str(a.get("matchup_context", ""))
+
+            # Determine pitcher vs batter for projection display
+            pitcher_positions = {"SP", "RP", "P"}
+            add_is_pitcher = bool(set(add_pos.split("/")) & pitcher_positions)
+            drop_is_pitcher = bool(set(drop_pos.split("/")) & pitcher_positions)
+
+            raw_add_proj = a.get("add_proj")
+            add_proj = _proj_row(
+                add_id, raw_add_proj if isinstance(raw_add_proj, dict) else None
             )
-        return pd.DataFrame(rows_out)
+            raw_drop_proj = a.get("drop_proj")
+            drop_proj = _proj_row(
+                drop_id, raw_drop_proj if isinstance(raw_drop_proj, dict) else None
+            )
+
+            score_color = (
+                "#2e7d32"
+                if float(score) >= 7
+                else "#e65100"
+                if float(score) >= 5
+                else "#888"
+            )
+
+            # Category pills
+            cat_pills = [
+                ui.tags.span(
+                    lbl,
+                    style=(
+                        "background:#1a3a5c;color:#7ab8d4;font-size:0.68rem;font-weight:700;"
+                        "padding:1px 7px;border-radius:8px;margin-right:3px;"
+                    ),
+                )
+                for lbl in cat_labels
+            ]
+
+            # Player header row: ADD name + position + streak badge
+            def _player_header(
+                name: str, pos: str, streak: str, action: str, action_color: str
+            ) -> Tag:
+                return ui.tags.div(
+                    ui.tags.span(
+                        action,
+                        style=f"font-size:0.65rem;font-weight:700;background:{action_color};"
+                        "color:#fff;padding:1px 7px;border-radius:8px;margin-right:6px;"
+                        "text-transform:uppercase;letter-spacing:0.06em;",
+                    ),
+                    ui.tags.span(
+                        name,
+                        style="font-size:1.0rem;font-weight:700;color:#fff;margin-right:6px;",
+                    ),
+                    ui.tags.span(
+                        pos,
+                        style="font-size:0.7rem;background:#1a3a5c;color:#7ab8d4;padding:1px 6px;"
+                        "border-radius:6px;margin-right:6px;",
+                    )
+                    if pos
+                    else ui.tags.span(),
+                    _streak_badge(streak),
+                    style="display:flex;align-items:center;flex-wrap:wrap;gap:2px;",
+                )
+
+            card = ui.tags.div(
+                # Score badge
+                ui.tags.div(
+                    ui.tags.span(
+                        f"Score: {float(score):.1f}",
+                        style=f"font-size:0.72rem;font-weight:700;color:{score_color};",
+                    ),
+                    style="float:right;padding:0.25rem 0.5rem;",
+                ),
+                # Add row
+                _player_header(add_name, add_pos, add_streak, "Add", "#2e7d32"),
+                _proj_stats_html(add_proj, add_is_pitcher),
+                # Drop row
+                ui.tags.div(
+                    ui.tags.span(
+                        "↓",
+                        style="font-size:0.9rem;color:#888;margin:6px 0 4px 0;display:block;",
+                    ),
+                ),
+                _player_header(drop_name, drop_pos, drop_streak, "Drop", "#c62828"),
+                _proj_stats_html(drop_proj, drop_is_pitcher),
+                # Category pills + context
+                ui.tags.div(
+                    ui.tags.span(
+                        "Improves: ",
+                        style="font-size:0.7rem;color:#8ab;margin-right:4px;",
+                    ),
+                    *cat_pills,
+                    style="margin-top:8px;display:flex;align-items:center;flex-wrap:wrap;",
+                )
+                if cat_pills
+                else ui.tags.span(),
+                ui.tags.div(
+                    ui.tags.span(matchup_ctx, style="font-size:0.72rem;color:#a0b4c8;"),
+                    style="margin-top:4px;",
+                )
+                if matchup_ctx
+                else ui.tags.span(),
+                ui.tags.div(
+                    ui.tags.span(
+                        "⬆ " + callup_note, style="font-size:0.72rem;color:#4fc3f7;"
+                    ),
+                    style="margin-top:2px;",
+                )
+                if callup_note
+                else ui.tags.span(),
+                style=(
+                    "background:#0d1f38;border:1px solid #1e3a5f;border-radius:6px;"
+                    "padding:0.75rem 1rem;margin-bottom:0.75rem;overflow:hidden;"
+                ),
+            )
+            cards.append(card)
+
+        return ui.tags.div(*cards, style="padding:0.25rem 0;")
 
     # ── Matchup Detail ────────────────────────────────────────────────────
 

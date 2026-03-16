@@ -192,28 +192,114 @@ def optimize_daily_lineup(
     return lineup
 
 
+def _lookup_position(player_id: str, df: pd.DataFrame) -> str:
+    """Return the position string for a player from a DataFrame, or '' if not found."""
+    if df.empty or "player_id" not in df.columns:
+        return ""
+    rows = df[df["player_id"] == player_id]
+    if rows.empty:
+        return ""
+    pos = rows.iloc[0].get("position", "")
+    return str(pos) if pos and not (isinstance(pos, float)) else ""
+
+
+def _build_matchup_context(
+    categories_improved: list[str],
+    matchup_df: pd.DataFrame,
+) -> str:
+    """Build a short matchup-context sentence for the categories being helped.
+
+    e.g. "K: trailing by 18 (flippable) · SV+H: toss-up · HR: safe win"
+    """
+    if matchup_df.empty or not categories_improved:
+        return ""
+
+    cat_label = {
+        "h": "H",
+        "hr": "HR",
+        "sb": "SB",
+        "bb": "BB",
+        "fpct": "FPCT",
+        "avg": "AVG",
+        "ops": "OPS",
+        "w": "W",
+        "k": "K",
+        "whip": "WHIP",
+        "k_bb": "K/BB",
+        "sv_h": "SV+H",
+    }
+    status_short = {
+        "safe_win": "safe win ✓",
+        "flippable_win": "leading (flippable)",
+        "toss_up": "toss-up",
+        "flippable_loss": "trailing (flippable)",
+        "safe_loss": "safe loss ✗",
+    }
+
+    status_map: dict[str, tuple[str, float, float]] = {}
+    for _, r in matchup_df.iterrows():
+        cat = str(r.get("category", ""))
+        status = str(r.get("status", ""))
+        my_val = float(r.get("my_value", 0.0))
+        opp_val = float(r.get("opp_value", 0.0))
+        status_map[cat] = (status, my_val, opp_val)
+
+    parts: list[str] = []
+    for cat in categories_improved:
+        if cat not in status_map:
+            continue
+        status, my_val, opp_val = status_map[cat]
+        label = cat_label.get(cat, cat.upper())
+        status_str = status_short.get(status, status)
+        gap = abs(my_val - opp_val)
+        if cat in ("avg", "ops", "fpct", "whip", "k_bb"):
+            gap_str = f"{gap:.3f}"
+        else:
+            gap_str = str(int(round(gap)))
+        parts.append(f"{label}: {status_str} (gap {gap_str})")
+
+    return " · ".join(parts)
+
+
 def recommend_adds(
     waiver_df: pd.DataFrame,
     my_roster_df: pd.DataFrame,
     acquisitions_used: int,
     config: LeagueSettings,
+    matchup_df: pd.DataFrame | None = None,
 ) -> list[dict[str, object]]:
     """Return the top actionable waiver wire adds within the weekly limit.
 
     Args:
         waiver_df: Output of rank_free_agents(), sorted by overall_score.
-        my_roster_df: Current roster.
+            May optionally contain 'position', 'streak', 'is_callup',
+            'days_since_callup', 'from_level', and 'player_name' columns.
+        my_roster_df: Current roster. May contain 'position' and 'streak'.
         acquisitions_used: Number of adds already made this week.
         config: LeagueSettings for max_acquisitions_per_week (5).
+        matchup_df: Optional matchup state for category-level context in reason.
 
     Returns:
         List of dicts (up to max_acquisitions_per_week - acquisitions_used):
-          {"add_player_id": str, "drop_player_id": str, "reason": str,
-           "score": float, "categories_improved": list[str]}
+          {
+            "add_player_id": str,
+            "add_position": str,        # e.g. "OF", "SP"
+            "add_streak": str,          # "🔥 Hot" | "❄️ Cold" | "—"
+            "add_callup_note": str,     # e.g. "Called up 5 days ago from AAA"
+            "drop_player_id": str,
+            "drop_position": str,
+            "drop_streak": str,
+            "reason": str,              # human-readable matchup-aware reason
+            "matchup_context": str,     # per-category status for improved cats
+            "score": float,
+            "categories_improved": list[str],
+          }
     """
     max_adds = config.max_acquisitions_per_week - acquisitions_used
     if max_adds <= 0:
         return []
+
+    _mdf = matchup_df if matchup_df is not None else pd.DataFrame()
 
     results: list[dict[str, object]] = []
     used_drop_ids: set[str] = set()
@@ -228,8 +314,6 @@ def recommend_adds(
 
         if not add_id or not drop_id:
             continue
-
-        # Avoid recommending the same drop twice
         if drop_id in used_drop_ids:
             continue
 
@@ -242,17 +326,76 @@ def recommend_adds(
         except (json.JSONDecodeError, TypeError):
             pass
 
-        reason = (
-            f"Adds value in: {', '.join(categories_improved)}"
-            if categories_improved
-            else "General improvement"
+        # Position lookup
+        add_pos = str(row.get("position", "")) if "position" in row.index else ""
+        drop_pos = _lookup_position(drop_id, my_roster_df)
+
+        # Streak
+        add_streak = str(row.get("streak", "—")) if "streak" in row.index else "—"
+        drop_streak_rows = (
+            my_roster_df[my_roster_df["player_id"] == drop_id]
+            if not my_roster_df.empty and "player_id" in my_roster_df.columns
+            else pd.DataFrame()
         )
+        drop_streak = "—"
+        if not drop_streak_rows.empty and "streak" in drop_streak_rows.columns:
+            drop_streak = str(drop_streak_rows.iloc[0].get("streak", "—"))
+
+        # Call-up note
+        callup_note = ""
+        is_callup = bool(row.get("is_callup", False))
+        if is_callup:
+            days = row.get("days_since_callup")
+            from_level = str(row.get("from_level", "minors"))
+            if days is not None and not (isinstance(days, float) and pd.isna(days)):
+                callup_note = f"Called up {int(days)} day(s) ago from {from_level}"
+            else:
+                callup_note = f"Recent call-up from {from_level}"
+
+        # Matchup context string
+        matchup_context = _build_matchup_context(categories_improved, _mdf)
+
+        # Build reason
+        cat_labels = {
+            "h": "H",
+            "hr": "HR",
+            "sb": "SB",
+            "bb": "BB",
+            "fpct": "FPCT",
+            "avg": "AVG",
+            "ops": "OPS",
+            "w": "W",
+            "k": "K",
+            "whip": "WHIP",
+            "k_bb": "K/BB",
+            "sv_h": "SV+H",
+        }
+        cat_str = ", ".join(cat_labels.get(c, c.upper()) for c in categories_improved)
+        reason_parts: list[str] = []
+        if cat_str:
+            reason_parts.append(f"Improves {cat_str}")
+        if matchup_context:
+            reason_parts.append(matchup_context)
+        if add_streak == "🔥 Hot":
+            reason_parts.append("Currently on a hot streak")
+        if drop_streak == "❄️ Cold":
+            reason_parts.append("Drop candidate is in a cold streak")
+        if callup_note:
+            reason_parts.append(callup_note)
+
+        reason = ". ".join(reason_parts) if reason_parts else "General improvement"
 
         results.append(
             {
                 "add_player_id": add_id,
+                "add_position": add_pos,
+                "add_streak": add_streak,
+                "add_callup_note": callup_note,
                 "drop_player_id": drop_id,
+                "drop_position": drop_pos,
+                "drop_streak": drop_streak,
                 "reason": reason,
+                "matchup_context": matchup_context,
                 "score": score,
                 "categories_improved": categories_improved,
             }
