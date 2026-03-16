@@ -13,10 +13,11 @@
 3. [Phase 2 — Lineup Automation](#phase-2--lineup-automation)
 4. [Phase 3 — Waiver Wire Semi-Automation](#phase-3--waiver-wire-semi-automation)
 5. [Phase 4 — Full Autonomy](#phase-4--full-autonomy)
-6. [This Season: Milestones](#this-season-milestones)
-7. [New Files Summary](#new-files-summary)
-8. [Risk Log](#risk-log)
-9. [Rules Reference](#rules-reference)
+6. [Phase 5 — AI-Assisted Draft](#phase-5--ai-assisted-draft)
+7. [This Season: Milestones](#this-season-milestones)
+8. [New Files Summary](#new-files-summary)
+9. [Risk Log](#risk-log)
+10. [Rules Reference](#rules-reference)
 
 ---
 
@@ -633,6 +634,203 @@ Automated monthly report comparing:
 
 ---
 
+## Phase 5 — AI-Assisted Draft
+
+**When:** Next season, pre-draft
+**Goal:** AI provides real-time pick recommendations during the live draft, with you making the final call
+
+### The core constraint: Yahoo's live draft interface
+
+Yahoo's API exposes a draft submission endpoint —
+`POST /fantasy/v2/league/{league_key}/draftresults` — so programmatic picks are
+technically possible. However, Yahoo's live draft room runs on a real-time web
+interface with a countdown timer (typically 90 seconds per pick), and the write API
+has historically been unreliable during live drafts. Picks can time out or fail to
+register silently. Given that the draft sets your entire roster for the season, a
+missed pick due to an API hiccup is a high-consequence, unrecoverable failure.
+
+**The recommended approach for Phase 5 is therefore a draft assistant, not full
+autopilot.** The AI surfaces a ranked recommendation with reasoning before your timer
+expires. You click the pick in Yahoo yourself. This keeps a human in the loop for the
+one action that can't be undone.
+
+Full autopilot via the API is documented below as a future option once the assistant
+mode has been validated across at least one full draft.
+
+### What the AI adds over a static cheat sheet
+
+Most managers draft from a pre-ranked cheat sheet. The AI's genuine advantage is
+**dynamic positional scarcity tracking**: as each pick is made across all teams, it
+recalculates the remaining supply of each position and adjusts its recommendations
+accordingly. A static cheat sheet can't do this — it treats every pick independently.
+
+In practice this matters most in rounds 8–15 where positional run-ons happen (everyone
+suddenly drafts SPs in rounds 9–11) and a manager on a static sheet either over- or
+under-reacts. The AI sees the full remaining pool and tells you whether to join the
+run or stay patient.
+
+Additional value over a cheat sheet:
+- Weighted for your specific league's 12 scoring categories (not generic rankings)
+- Flags injury risk using pre-draft news sentiment from `fact_player_news`
+- Adapts to your actual roster needs pick-by-pick (don't take a 4th SP if you have 0 closers)
+- Confidence degrades honestly in late rounds — tells you when it's a coin flip
+
+### What gets built
+
+#### `src/analysis/draft_advisor.py`
+
+The core draft engine:
+
+```python
+@dataclass
+class DraftPick:
+    player_id: str
+    player_name: str
+    position: str
+    recommended_rank: int        # AI's ranking of this player at this moment
+    pre_draft_rank: int          # original rank before any picks were made
+    scarcity_adjustment: float   # how much positional scarcity shifted the rank
+    category_fit_score: float    # how well this player fills your category gaps
+    news_risk_flag: bool         # True if 🚨 Bad news in last 7 days
+    reasoning: str               # human-readable explanation
+
+def get_recommendation(
+    available_players: list[str],   # player IDs still on the board
+    my_roster: list[str],           # player IDs already drafted by you
+    all_picks: list[DraftPick],     # full pick history across all teams
+    pick_number: int,
+    round_number: int,
+    league_settings: LeagueSettings,
+) -> list[DraftPick]                # ranked list, best pick first
+```
+
+**Positional scarcity model:**
+
+For each position, compute a scarcity score after every pick:
+
+```
+players_remaining_at_pos  = count of available players at this position
+picks_until_my_next_turn  = number of picks before I pick again (snake draft)
+expected_taken_before_me  = picks_until_my_next_turn × avg_draft_rate_for_position
+scarcity_score = max(0, expected_taken_before_me - players_remaining_at_pos)
+```
+
+High scarcity = you should reach slightly for this position now rather than wait.
+Zero scarcity = the position is deep, be patient and take best available.
+
+**Category fit scoring:**
+
+After each of your picks, recompute your current roster's projected category totals
+and compare to a target distribution based on your league's scoring. The fit score
+for each available player answers: "how much does adding this player move my weakest
+categories toward target?"
+
+#### `src/pipeline/draft_monitor.py`
+
+Polls the Yahoo draft API every 10 seconds to detect new picks:
+
+```python
+def get_current_draft_state(league_key: str) -> DraftState:
+    """Poll Yahoo API for picks made so far. Returns full pick history
+    and list of remaining available players."""
+```
+
+Keeps a local in-memory copy of draft state so the dashboard updates in near-real-time
+without hammering the API.
+
+#### Draft dashboard (app extension)
+
+A new mode in the Shiny app activated by a `?draft=true` URL parameter. Shows:
+
+- **My next pick** — large card with the AI's top recommendation, reasoning, and
+  confidence score
+- **Top 5 alternatives** — in case your #1 target was just taken
+- **My roster so far** — with per-category projected totals and gaps
+- **Positional scarcity heatmap** — all positions colour-coded by how fast they're
+  being drafted vs supply remaining
+- **Pick feed** — live list of all picks made with a flag when a player on your
+  watch list is taken
+
+The dashboard auto-refreshes every 15 seconds. When it's your turn (detected by
+pick number), the recommendation card pulses to draw your attention.
+
+#### Pre-draft prep — `scripts/build_draft_rankings.py`
+
+Run the day before the draft to:
+
+1. Pull latest Steamer projections into `fact_projections`
+2. Pull recent news into `fact_player_news` and flag any injury risks
+3. Compute baseline ADP (average draft position) from recent mock draft data
+4. Generate initial category-weighted rankings saved to `fact_draft_rankings`
+5. Let you review and manually override any ranking before the draft starts
+   (overrides stored in `fact_draft_rankings.manual_override`)
+
+Manual overrides matter: if you think Steamer is wrong about a specific player, you
+should be able to override the rank without touching code. A simple script prompts
+you with the AI's ranking and lets you adjust.
+
+#### `fact_draft_rankings` — new MotherDuck table
+
+```sql
+CREATE TABLE fact_draft_rankings (
+    player_id           VARCHAR NOT NULL,
+    season              INTEGER NOT NULL,
+    pre_draft_rank      INTEGER NOT NULL,        -- AI's initial ranking
+    manual_override     INTEGER,                 -- your override, if any
+    effective_rank      INTEGER NOT NULL,        -- manual_override ?? pre_draft_rank
+    category_scores     JSON,                    -- per-category projected contribution
+    injury_risk_flag    BOOLEAN DEFAULT false,
+    injury_risk_note    VARCHAR,                 -- from news sentiment analysis
+    adp                 DECIMAL(6, 1),           -- average draft position from mock data
+    adp_source          VARCHAR,
+    PRIMARY KEY (player_id, season)
+);
+```
+
+### Draft-day workflow
+
+```
+Day before draft:
+  1. Run build_draft_rankings.py
+  2. Review rankings in the app — adjust any overrides
+  3. Confirm league draft settings match league_settings.yaml
+
+Draft day:
+  1. Open Shiny app in draft mode (?draft=true)
+  2. Open Yahoo draft room in a separate window
+  3. draft_monitor.py starts polling automatically when draft begins
+  4. When it's your pick: read AI recommendation, click it in Yahoo
+  5. App updates as each pick is made across the league
+
+Post-draft:
+  1. Full draft recap logged to fact_ai_decisions (type: 'draft_pick')
+  2. Review: how did AI recommendations compare to consensus ADP?
+  3. Note any systematic biases to fix before next year
+```
+
+### The autopilot option (future state)
+
+Once the draft assistant has been used for at least one full draft and you trust its
+recommendations, the write path can be enabled:
+
+```python
+# In draft_monitor.py — only active if draft_autopilot: true in ai_policy.yaml
+if config.draft_autopilot and seconds_remaining < 20:
+    top_pick = get_recommendation(...)[0]
+    if top_pick.confidence >= config.draft_autopilot_min_confidence:
+        yahoo_client.submit_draft_pick(league_key, top_pick.player_id)
+```
+
+The 20-second trigger is intentional — the AI waits to see if you manually pick first,
+and only submits automatically as a safety net if you haven't acted. This keeps you
+in control while preventing a clock-out on a missed pick.
+
+**Risk:** If the API call fails at second 19 and the timer hits zero, Yahoo auto-picks
+for you (usually the highest ADP player remaining — not terrible, but not your choice).
+Log all API failures during drafts for post-draft review.
+
+---
+
 ## This Season: Milestones
 
 | # | Milestone | Deliverables | Gate to advance |
@@ -672,6 +870,17 @@ src/api/
                                     data pipeline)
   transaction_automation.yml        Nightly transaction evaluation (Phase 3)
 
+src/analysis/
+  draft_advisor.py                  Draft recommendation engine — positional scarcity,
+  (new)                             category fit scoring, pick-by-pick ranking
+
+src/pipeline/
+  draft_monitor.py                  Polls Yahoo draft API every 10s, keeps live state
+
+scripts/
+  build_draft_rankings.py           Pre-draft prep: pull projections, flag injury risks,
+                                    generate initial rankings, accept manual overrides
+
 docs/
   ai_automation_plan.md             This document
 ```
@@ -682,6 +891,7 @@ docs/
 |---|---|---|
 | `fact_ai_decisions` | Audit trail for every decision the AI considers | 1 |
 | `fact_weekly_adds` | Real-time add budget tracker | 3 |
+| `fact_draft_rankings` | Pre-draft category-weighted rankings with manual overrides | 5 |
 
 ---
 
@@ -795,4 +1005,4 @@ with later conditions taking precedence on conflicts.
 
 ---
 
-*Last updated: 2026-03-15*
+*Last updated: 2026-03-15 — Phase 5 (AI-assisted draft) added*
