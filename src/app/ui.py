@@ -10,8 +10,8 @@ Tabs (in order):
   3. Waiver Wire
   4. Roster
   5. Transactions
-  6. News
-  7. Trades
+  6. Trades
+  7. News
 """
 
 from __future__ import annotations
@@ -222,7 +222,24 @@ app_ui = ui.page_navbar(
             col_widths=[12],
         ),
     ),
-    # ── Tab 6: News ───────────────────────────────────────────────────────
+    # ── Tab 6: Trades ─────────────────────────────────────────────────────
+    ui.nav_panel(
+        "Trades",
+        ui.layout_columns(
+            _card(
+                "Trade Proposals",
+                _note(
+                    "Algorithmically-generated trade ideas based on your current category "
+                    "strengths and weaknesses. Proposals target fair value (acceptance ≥ 50%) "
+                    "with a focus on improving your weakest categories. Category pills show "
+                    "which scoring areas each player impacts."
+                ),
+                ui.output_ui("trades_ui"),
+            ),
+            col_widths=[12],
+        ),
+    ),
+    # ── Tab 7: News ───────────────────────────────────────────────────────
     ui.nav_panel(
         "News",
         ui.layout_columns(
@@ -233,7 +250,7 @@ app_ui = ui.page_navbar(
                     "Sentiment is scored by VADER NLP: ✅ Good = positive news "
                     "(hot streak, return from IL), 🚨 Bad = negative news "
                     "(injury, demotion, slump), ℹ️ Informative = neutral coverage. "
-                    "Headlines link to the original article."
+                    "Click any headline to read the full article."
                 ),
                 ui.layout_columns(
                     ui.input_select(
@@ -256,23 +273,6 @@ app_ui = ui.page_navbar(
                     col_widths=[3, 4],
                 ),
                 ui.output_ui("news_ui"),
-            ),
-            col_widths=[12],
-        ),
-    ),
-    # ── Tab 7: Trades ─────────────────────────────────────────────────────
-    ui.nav_panel(
-        "Trades",
-        ui.layout_columns(
-            _card(
-                "Trade Proposals",
-                _note(
-                    "Algorithmically-generated trade ideas based on your current category "
-                    "strengths and weaknesses. Proposals target fair value (acceptance ≥ 50%) "
-                    "with a focus on improving your weakest categories. Category pills show "
-                    "which scoring areas each player impacts."
-                ),
-                ui.output_ui("trades_ui"),
             ),
             col_widths=[12],
         ),
