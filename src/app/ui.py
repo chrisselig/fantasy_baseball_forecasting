@@ -125,7 +125,7 @@ app_ui = ui.page_navbar(
         "Waiver Wire",
         # Row 1 — Recommended adds/drops
         ui.layout_columns(
-            _card("Recommended Adds / Drops", ui.output_data_frame("adds_table")),
+            _card("Recommended Adds / Drops", ui.output_ui("adds_table")),
             col_widths=[12],
         ),
         # Row 2 — Free agent rankings
