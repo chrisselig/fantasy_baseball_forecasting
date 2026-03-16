@@ -129,10 +129,15 @@ def _html_table(headers: list[str], rows: list[list[Any]]) -> Tag:
 
 
 def _streak_badge(label: str) -> Tag:
-    """Styled badge for hot/cold label."""
+    """Styled badge for hot/cold/warm label."""
     if label == "🔥 Hot":
         style = (
             "background:#d32f2f;color:#fff;padding:1px 7px;"
+            "border-radius:10px;font-size:0.72rem;"
+        )
+    elif label == "☀️ Warm":
+        style = (
+            "background:#e65100;color:#fff;padding:1px 7px;"
             "border-radius:10px;font-size:0.72rem;"
         )
     elif label == "❄️ Cold":
@@ -165,9 +170,28 @@ def _stat_box(title: str, value: str, sub: str = "", color: str = "#1a7fa1") -> 
 
 
 def _fmt_stat(v: Any) -> str:
-    """Format a stat value for display."""
+    """Format a stat value for display. Returns '—' for None/NaN."""
+    if v is None:
+        return "—"
     if isinstance(v, float):
+        import math
+
+        if math.isnan(v):
+            return "—"
         return f"{v:.3f}" if v < 10 else str(int(v))
+    return str(v)
+
+
+def _safe_count(v: Any) -> str:
+    """Format an integer counting stat, returning '—' for None/NaN."""
+    if v is None:
+        return "—"
+    if isinstance(v, float):
+        import math
+
+        if math.isnan(v):
+            return "—"
+        return str(int(v))
     return str(v)
 
 
@@ -684,14 +708,34 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         raw_adds = report.get("adds", [])
         if not isinstance(raw_adds, list) or len(raw_adds) == 0:
             return pd.DataFrame(columns=["Add", "Drop", "Score", "Reason", "Improves"])
+
+        # Build ID→name lookup from roster (drops) and waiver wire (adds)
+        id_to_name: dict[str, str] = {}
+        roster = roster_data()
+        if not roster.empty and "player_id" in roster.columns:
+            for _, row in roster.iterrows():
+                pid = str(row.get("player_id", ""))
+                name = str(row.get("player_name", ""))
+                if pid and name:
+                    id_to_name[pid] = name
+        waiver = waiver_data()
+        if not waiver.empty and "player_id" in waiver.columns:
+            for _, row in waiver.iterrows():
+                pid = str(row.get("player_id", ""))
+                name = str(row.get("player_name", ""))
+                if pid and name:
+                    id_to_name[pid] = name
+
         rows_out: list[dict[str, Any]] = []
         for item in raw_adds:
             a: dict[str, Any] = item if isinstance(item, dict) else {}
+            add_id = str(a.get("add_player_id", ""))
+            drop_id = str(a.get("drop_player_id", ""))
             cats = a.get("categories_improved", [])
             rows_out.append(
                 {
-                    "Add": str(a.get("add_player_id", "")),
-                    "Drop": str(a.get("drop_player_id", "")),
+                    "Add": id_to_name.get(add_id, add_id),
+                    "Drop": id_to_name.get(drop_id, drop_id),
                     "Score": a.get("score", ""),
                     "Reason": str(a.get("reason", "")),
                     "Improves": ", ".join(cats)
@@ -915,12 +959,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     str(r.get("slot", "")),
                     str(r.get("player_name", "")),
                     str(r.get("position", "")),
-                    str(r.get("h", "—")),
-                    str(r.get("hr", "—")),
-                    str(r.get("sb", "—")),
-                    str(r.get("bb", "—")),
-                    _fmt_stat(r.get("avg", 0.0)),
-                    _fmt_stat(r.get("ops", 0.0)),
+                    _safe_count(r.get("h")),
+                    _safe_count(r.get("hr")),
+                    _safe_count(r.get("sb")),
+                    _safe_count(r.get("bb")),
+                    _fmt_stat(r.get("avg")),
+                    _fmt_stat(r.get("ops")),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
