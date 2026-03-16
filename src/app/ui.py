@@ -76,12 +76,7 @@ app_ui = ui.page_navbar(
             _card("Matchup Outlook", ui.output_ui("projected_wins_ui")),
             col_widths=[12],
         ),
-        # Row 3 — Recommended adds/drops
-        ui.layout_columns(
-            _card("Recommended Adds / Drops", ui.output_data_frame("adds_table")),
-            col_widths=[12],
-        ),
-        # Row 4 — Lineup + scoreboard
+        # Row 3 — Lineup + scoreboard
         ui.layout_columns(
             _card("Today's Lineup", ui.output_data_frame("lineup_table")),
             _card("Category Scoreboard", ui.output_ui("matchup_scoreboard_ui")),
@@ -127,6 +122,12 @@ app_ui = ui.page_navbar(
     # ── Tab 3: Waiver Wire ────────────────────────────────────────────────
     ui.nav_panel(
         "Waiver Wire",
+        # Row 1 — Recommended adds/drops
+        ui.layout_columns(
+            _card("Recommended Adds / Drops", ui.output_data_frame("adds_table")),
+            col_widths=[12],
+        ),
+        # Row 2 — Free agent rankings
         ui.layout_columns(
             _card(
                 "Free Agent Rankings",
