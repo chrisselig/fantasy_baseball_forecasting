@@ -1,6 +1,15 @@
 # Fantasy Baseball Intelligence App
 An end-to-end Python platform to manage my Yahoo Fantasy Baseball team and win the league.
 
+## Documentation
+
+| Document | Description |
+|---|---|
+| [Project Description](docs/project_description.md) | Full architecture, schema design, and module overview |
+| [AI Automation Plan](docs/ai_automation_plan.md) | Roadmap for AI-driven team management — rules engine, lineup automation, and full autopilot |
+
+---
+
 ## Overview
 A Python-based fantasy baseball intelligence platform deployed on shinyapps.io that integrates
 with Yahoo Fantasy Sports to deliver daily lineup recommendations, matchup projections, and
