@@ -50,7 +50,7 @@ STUB_DAILY_REPORT: dict[str, Any] = {
             "my_leads": True,
             "margin_pct": 0.105,
             "win_prob": 0.73,
-            "status": "flippable_win",
+            "status": "flippable_win",  # leading but not locked
         },
         {
             "category": "hr",
@@ -684,6 +684,21 @@ _ROSTER_ROWS: list[dict[str, object]] = [
 
 STUB_ROSTER_DF: pd.DataFrame = pd.DataFrame(_ROSTER_ROWS)
 
+# Assign representative hot/cold labels for offline display
+_ROSTER_STREAKS: dict[str, str] = {
+    "p_judge": "🔥 Hot",
+    "p_acuna": "🔥 Hot",
+    "p_tatis": "🔥 Hot",
+    "p_hader": "🔥 Hot",
+    "p_il1": "❄️ Cold",
+    "p_il3": "❄️ Cold",
+    "p_verlander": "❄️ Cold",
+    "p_bench3": "❄️ Cold",
+}
+STUB_ROSTER_DF["streak"] = STUB_ROSTER_DF["player_id"].map(
+    lambda pid: _ROSTER_STREAKS.get(str(pid), "—")
+)
+
 # ── Stub Waiver Wire DataFrame ─────────────────────────────────────────────────
 
 _WAIVER_ROWS: list[dict[str, object]] = [
@@ -1081,3 +1096,148 @@ _WAIVER_ROWS: list[dict[str, object]] = [
 ]
 
 STUB_WAIVER_DF: pd.DataFrame = pd.DataFrame(_WAIVER_ROWS)
+
+_WAIVER_STREAKS: dict[str, str] = {
+    "p_callup1": "🔥 Hot",
+    "p_wire3": "🔥 Hot",
+    "p_wire2": "🔥 Hot",
+    "p_wire13": "❄️ Cold",
+    "p_wire17": "❄️ Cold",
+}
+STUB_WAIVER_DF["streak"] = STUB_WAIVER_DF["player_id"].map(
+    lambda pid: _WAIVER_STREAKS.get(str(pid), "—")
+)
+
+# ── Stub Transactions DataFrame ────────────────────────────────────────────
+
+_TRANSACTION_ROWS: list[dict[str, object]] = [
+    {
+        "transaction_date": "2025-06-09",
+        "type": "mlb_injury",
+        "player_name": "Spencer Strider",
+        "team": "ATL",
+        "position": "SP",
+        "notes": "Placed on 60-day IL (Tommy John surgery recovery)",
+    },
+    {
+        "transaction_date": "2025-06-08",
+        "type": "mlb_callup",
+        "player_name": "Jackson Chourio",
+        "team": "MIL",
+        "position": "OF",
+        "notes": "Called up from AAA Nashville",
+    },
+    {
+        "transaction_date": "2025-06-07",
+        "type": "mlb_activation",
+        "player_name": "Ronald Acuna Jr.",
+        "team": "ATL",
+        "position": "OF",
+        "notes": "Activated from 60-day IL (knee)",
+    },
+    {
+        "transaction_date": "2025-06-06",
+        "type": "mlb_callup",
+        "player_name": "Pete Crow-Armstrong",
+        "team": "CHC",
+        "position": "OF",
+        "notes": "Called up from AAA Iowa; optioned out Jun 3, recalled Jun 6",
+    },
+    {
+        "transaction_date": "2025-06-05",
+        "type": "mlb_injury",
+        "player_name": "Shane McClanahan",
+        "team": "TB",
+        "position": "SP",
+        "notes": "Placed on 15-day IL (shoulder inflammation)",
+    },
+    {
+        "transaction_date": "2025-06-04",
+        "type": "mlb_injury",
+        "player_name": "Gerrit Cole",
+        "team": "NYY",
+        "position": "SP",
+        "notes": "Placed on 15-day IL (elbow soreness); retroactive to Jun 2",
+    },
+    {
+        "transaction_date": "2025-06-03",
+        "type": "mlb_activation",
+        "player_name": "Ozzie Albies",
+        "team": "ATL",
+        "position": "2B",
+        "notes": "Activated from 10-day IL (wrist)",
+    },
+    {
+        "transaction_date": "2025-06-02",
+        "type": "mlb_injury",
+        "player_name": "Luis Castillo",
+        "team": "SEA",
+        "position": "SP",
+        "notes": "Placed on 15-day IL (right shoulder fatigue)",
+    },
+    {
+        "transaction_date": "2025-06-01",
+        "type": "mlb_callup",
+        "player_name": "Evan Carter",
+        "team": "TEX",
+        "position": "OF",
+        "notes": "Called up from AA Frisco",
+    },
+    {
+        "transaction_date": "2025-05-30",
+        "type": "mlb_demotion",
+        "player_name": "Bobby Miller",
+        "team": "LAD",
+        "position": "SP",
+        "notes": "Optioned to AAA Oklahoma City (roster crunch)",
+    },
+]
+
+STUB_TRANSACTIONS_DF: pd.DataFrame = pd.DataFrame(_TRANSACTION_ROWS)
+
+# ── Stub Trade Proposals ───────────────────────────────────────────────────
+
+STUB_TRADES: list[dict[str, object]] = [
+    {
+        "give_player": "Kyle Tucker",
+        "give_team": "HOU",
+        "give_position": "OF",
+        "give_helps": ["H", "HR", "SB"],
+        "receive_player": "Bobby Witt Jr.",
+        "receive_team": "KC",
+        "receive_position": "SS",
+        "receive_helps": ["H", "SB", "HR"],
+        "my_category_gain": "+2.1 SB, +1.4 H/week",
+        "rationale": "Tucker's elite SB upside fills your SB gap. Witt is a perennial "
+        "top-5 SS who addresses your biggest category deficit.",
+        "acceptance_pct": 68,
+    },
+    {
+        "give_player": "Gerrit Cole",
+        "give_team": "NYY",
+        "give_position": "SP",
+        "give_helps": ["K", "W", "WHIP"],
+        "receive_player": "Aaron Judge",
+        "receive_team": "NYY",
+        "receive_position": "OF",
+        "receive_helps": ["HR", "BB", "OPS"],
+        "my_category_gain": "+3.8 HR, +1.2 BB/week",
+        "rationale": "Cole is elite but your K/WHIP are already strong. Judge's "
+        "power upgrades your worst categories: HR and OPS.",
+        "acceptance_pct": 71,
+    },
+    {
+        "give_player": "Josh Hader",
+        "give_team": "HOU",
+        "give_position": "RP",
+        "give_helps": ["SV_H", "K/BB", "WHIP"],
+        "receive_player": "Emmanuel Clase",
+        "receive_team": "CLE",
+        "receive_position": "RP",
+        "receive_helps": ["SV_H", "WHIP", "K/BB"],
+        "my_category_gain": "+1.3 SV+H, comparable ratios",
+        "rationale": "Lateral RP swap sweetened with Clase's bullpen role security. "
+        "Use the extra roster spot freed to add an OF hitter for H/SB.",
+        "acceptance_pct": 55,
+    },
+]

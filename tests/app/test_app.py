@@ -150,7 +150,8 @@ def test_status_class_mapping() -> None:
     from src.app.server import _STATUS_CLASS
 
     assert _STATUS_CLASS["safe_win"] == "status-safe-win"
-    assert _STATUS_CLASS["flippable"] == "status-flippable"
+    assert _STATUS_CLASS["flippable_win"] == "status-flippable"
+    assert _STATUS_CLASS["flippable_loss"] == "status-toss-up"
     assert _STATUS_CLASS["toss_up"] == "status-toss-up"
     assert _STATUS_CLASS["safe_loss"] == "status-safe-loss"
 

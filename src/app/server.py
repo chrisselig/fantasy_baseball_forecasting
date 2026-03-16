@@ -17,43 +17,170 @@ import pandas as pd
 from htmltools import Tag
 from shiny import Inputs, Outputs, Session, reactive, render, ui
 
-from src.app.stubs import STUB_DAILY_REPORT, STUB_ROSTER_DF, STUB_WAIVER_DF
+from src.analysis.hot_cold import annotate_with_streaks, match_win_probability
+from src.app.stubs import (
+    STUB_DAILY_REPORT,
+    STUB_ROSTER_DF,
+    STUB_TRADES,
+    STUB_TRANSACTIONS_DF,
+    STUB_WAIVER_DF,
+)
 from src.config import load_league_settings
 from src.db.connection import managed_connection
 from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
+    FACT_PLAYER_STATS_DAILY,
     FACT_ROSTERS,
+    FACT_TRANSACTIONS,
     FACT_WAIVER_SCORES,
 )
 
 logger = logging.getLogger(__name__)
 
+# ── Category metadata ──────────────────────────────────────────────────────
+
+_CATEGORY_META: dict[str, dict[str, str]] = {
+    "h": {"label": "H", "desc": "Hits", "type": "batter", "win": "highest"},
+    "hr": {"label": "HR", "desc": "Home Runs", "type": "batter", "win": "highest"},
+    "sb": {"label": "SB", "desc": "Stolen Bases", "type": "batter", "win": "highest"},
+    "bb": {"label": "BB", "desc": "Walks", "type": "batter", "win": "highest"},
+    "fpct": {"label": "FPCT", "desc": "Fielding %", "type": "batter", "win": "highest"},
+    "avg": {
+        "label": "AVG",
+        "desc": "Batting Average",
+        "type": "batter",
+        "win": "highest",
+    },
+    "ops": {
+        "label": "OPS",
+        "desc": "On-Base + Slugging",
+        "type": "batter",
+        "win": "highest",
+    },
+    "w": {"label": "W", "desc": "Wins", "type": "pitcher", "win": "highest"},
+    "k": {"label": "K", "desc": "Strikeouts", "type": "pitcher", "win": "highest"},
+    "whip": {"label": "WHIP", "desc": "(W+H)/IP", "type": "pitcher", "win": "lowest"},
+    "k_bb": {
+        "label": "K/BB",
+        "desc": "K / Walk Ratio",
+        "type": "pitcher",
+        "win": "highest",
+    },
+    "sv_h": {
+        "label": "SV+H",
+        "desc": "Saves + Holds",
+        "type": "pitcher",
+        "win": "highest",
+    },
+}
+
+_STATUS_CLASS: dict[str, str] = {
+    "safe_win": "status-safe-win",
+    "flippable_win": "status-flippable",
+    "toss_up": "status-toss-up",
+    "flippable_loss": "status-toss-up",
+    "safe_loss": "status-safe-loss",
+}
+
+_STATUS_LABEL: dict[str, str] = {
+    "safe_win": "Safe Win",
+    "flippable_win": "Leading",
+    "toss_up": "Toss-Up",
+    "flippable_loss": "Trailing",
+    "safe_loss": "Safe Loss",
+}
+
+_PITCHER_SLOTS = frozenset({"SP", "SP1", "SP2", "RP", "RP1", "RP2", "P", "P1", "P2"})
+
+_TRANSACTION_TYPE_LABELS: dict[str, tuple[str, str]] = {
+    "mlb_injury": ("🩹 Injury", "#c62828"),
+    "mlb_activation": ("✅ Activation", "#2e7d32"),
+    "mlb_callup": ("⬆ Call-up", "#1a7fa1"),
+    "mlb_demotion": ("⬇ Demotion", "#7b5800"),
+}
+
+
+def _win_pct_class(pct: float) -> str:
+    """CSS class for win probability colouring."""
+    if pct >= 0.65:
+        return "win-high"
+    if pct >= 0.35:
+        return "win-mid"
+    return "win-low"
+
+
+def _html_table(headers: list[str], rows: list[list[Any]]) -> Tag:
+    """Build a styled HTML table matching the Savant theme."""
+    th_cells = [ui.tags.th(h) for h in headers]
+    tbody_rows: list[Any] = []
+    for row in rows:
+        td_cells = [
+            ui.tags.td(cell) if isinstance(cell, Tag) else ui.tags.td(str(cell))
+            for cell in row
+        ]
+        tbody_rows.append(ui.tags.tr(*td_cells))
+    return ui.tags.table(
+        ui.tags.thead(ui.tags.tr(*th_cells)),
+        ui.tags.tbody(*tbody_rows),
+        class_="shiny-data-frame table table-sm",
+        style="width:100%;",
+    )
+
+
+def _streak_badge(label: str) -> Tag:
+    """Styled badge for hot/cold label."""
+    if label == "🔥 Hot":
+        style = (
+            "background:#d32f2f;color:#fff;padding:1px 7px;"
+            "border-radius:10px;font-size:0.72rem;"
+        )
+    elif label == "❄️ Cold":
+        style = (
+            "background:#1565c0;color:#fff;padding:1px 7px;"
+            "border-radius:10px;font-size:0.72rem;"
+        )
+    else:
+        style = "color:#888;font-size:0.72rem;"
+    return ui.tags.span(label, style=style)
+
+
+def _stat_box(title: str, value: str, sub: str = "", color: str = "#1a7fa1") -> Tag:
+    """Compact dark stat box used in summary rows."""
+    return ui.tags.div(
+        ui.tags.span(
+            title,
+            style="font-size:0.65rem;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:0.08em;color:#7ab8d4;display:block;",
+        ),
+        ui.tags.div(
+            ui.tags.span(value, style="font-size:1.1rem;font-weight:700;color:#fff;"),
+            ui.tags.span(f"  {sub}", style="font-size:0.78rem;color:#8ab;")
+            if sub
+            else ui.tags.span(),
+        ),
+        style=f"background:#132747;border-radius:4px;border-left:3px solid {color};"
+        "padding:0.5rem 0.75rem;height:100%;",
+    )
+
+
+def _fmt_stat(v: Any) -> str:
+    """Format a stat value for display."""
+    if isinstance(v, float):
+        return f"{v:.3f}" if v < 10 else str(int(v))
+    return str(v)
+
+
+# ── Data loaders ───────────────────────────────────────────────────────────
+
 
 def _get_my_team_key() -> str:
-    """Return my team key from league config.
-
-    Reads my_team_key from config/league_settings.yaml.  The Shiny app is
-    read-only against MotherDuck and does not need any Yahoo credentials.
-    """
+    """Return my team key from league config."""
     return load_league_settings().my_team_key
 
 
 def _load_data_freshness() -> dict[str, object]:
-    """Query when the last successful pipeline run completed.
-
-    Uses the most recent report_date rather than CURRENT_DATE so the app
-    shows real data even when the pipeline last ran on a historical date
-    (e.g. during testing with seeded data or on pipeline-idle days).
-
-    Returns:
-        {
-          "generated_at": str | None,   # ISO timestamp or None
-          "report_date":  str | None,   # Date of the most recent report
-          "is_stale": bool,             # True if report_date != today
-          "is_offline": bool,           # True if DB query failed
-        }
-    """
+    """Query when the last successful pipeline run completed."""
     try:
         with managed_connection() as conn:
             row = conn.execute("""
@@ -93,12 +220,7 @@ def _load_data_freshness() -> dict[str, object]:
 
 
 def _load_daily_report() -> dict[str, Any]:
-    """Load the most recent pre-built report from MotherDuck.
-
-    Queries fact_daily_reports for the newest report_json regardless of date,
-    so the app shows real data even when the pipeline last ran on a past date.
-    Falls back to stub data if DB is unavailable or no report exists yet.
-    """
+    """Load the most recent pre-built report from MotherDuck."""
     try:
         with managed_connection() as conn:
             result = conn.execute(f"""
@@ -114,31 +236,41 @@ def _load_daily_report() -> dict[str, Any]:
     return dict(STUB_DAILY_REPORT)
 
 
-def _load_roster() -> pd.DataFrame:
-    """Load current roster from MotherDuck.
+def _load_recent_daily_stats(window_days: int = 10) -> pd.DataFrame:
+    """Load recent daily stats for streak computation."""
+    try:
+        with managed_connection() as conn:
+            df: pd.DataFrame = conn.execute(f"""
+                SELECT *
+                FROM {FACT_PLAYER_STATS_DAILY}
+                WHERE stat_date >= (
+                    SELECT MAX(stat_date) - INTERVAL '{window_days} days'
+                    FROM {FACT_PLAYER_STATS_DAILY}
+                )
+                ORDER BY player_id, stat_date
+            """).fetchdf()
+            return df
+    except (duckdb.Error, Exception) as exc:
+        logger.warning("Could not load daily stats for streaks: %s", exc)
+    return pd.DataFrame()
 
-    Queries fact_rosters joined with dim_players for today's snapshot.
-    Falls back to stub data if DB is unavailable.
-    """
+
+def _load_roster() -> pd.DataFrame:
+    """Load current roster from MotherDuck with streak annotations."""
     team_key = _get_my_team_key()
     if not team_key:
-        logger.warning("YAHOO_TEAM_KEY / YAHOO_TEAM_ID not set — using stub roster.")
         return STUB_ROSTER_DF.copy()
 
     try:
         with managed_connection() as conn:
-            # Use most recent snapshot date so the app shows data even when
-            # the pipeline last ran on a historical date (testing / off-season).
             snap_row = conn.execute(
-                f"""
-                SELECT MAX(snapshot_date) FROM {FACT_ROSTERS} WHERE team_id = ?
-            """,
+                f"SELECT MAX(snapshot_date) FROM {FACT_ROSTERS} WHERE team_id = ?",
                 [team_key],
             ).fetchone()
             if not snap_row or not snap_row[0]:
                 return STUB_ROSTER_DF.copy()
             latest_snapshot = snap_row[0]
-            # Stats window: Monday of the snapshot week through the snapshot date.
+
             import datetime as _dt
 
             week_start = latest_snapshot - _dt.timedelta(days=latest_snapshot.weekday())
@@ -147,6 +279,7 @@ def _load_roster() -> pd.DataFrame:
                 f"""
                 SELECT
                     r.roster_slot        AS slot,
+                    p.player_id,
                     p.full_name          AS player_name,
                     p.team,
                     array_to_string(p.positions, ',') AS position,
@@ -162,8 +295,7 @@ def _load_roster() -> pd.DataFrame:
                     COALESCE(s.k_bb, 0.0) AS k_bb,
                     COALESCE(s.sv_h, 0)  AS sv_h
                 FROM {FACT_ROSTERS} r
-                LEFT JOIN {DIM_PLAYERS} p
-                    ON r.player_id = p.player_id
+                LEFT JOIN {DIM_PLAYERS} p ON r.player_id = p.player_id
                 LEFT JOIN (
                     SELECT
                         player_id,
@@ -199,6 +331,11 @@ def _load_roster() -> pd.DataFrame:
             ).fetchdf()
 
             if not df.empty:
+                daily_df = _load_recent_daily_stats()
+                if not daily_df.empty and "player_id" in df.columns:
+                    df = annotate_with_streaks(df, daily_df)
+                elif "streak" not in df.columns:
+                    df["streak"] = "—"
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load roster from DB: %s", exc)
@@ -206,17 +343,13 @@ def _load_roster() -> pd.DataFrame:
 
 
 def _load_waiver_data() -> pd.DataFrame:
-    """Load waiver wire rankings from MotherDuck.
-
-    Queries fact_waiver_scores joined with dim_players for today's scores.
-    Falls back to yesterday's scores if today's aren't available yet.
-    Falls back to stub data if DB is unavailable.
-    """
+    """Load waiver wire rankings from MotherDuck with streak annotations."""
     try:
         with managed_connection() as conn:
             df: pd.DataFrame = conn.execute(f"""
                 SELECT
                     ROW_NUMBER() OVER (ORDER BY w.overall_score DESC) AS rank,
+                    p.player_id,
                     p.full_name          AS player_name,
                     p.team,
                     array_to_string(p.positions, ',') AS position,
@@ -227,8 +360,7 @@ def _load_waiver_data() -> pd.DataFrame:
                 FROM {FACT_WAIVER_SCORES} w
                 JOIN {DIM_PLAYERS} p ON w.player_id = p.player_id
                 WHERE w.score_date = (
-                    SELECT MAX(score_date)
-                    FROM {FACT_WAIVER_SCORES}
+                    SELECT MAX(score_date) FROM {FACT_WAIVER_SCORES}
                     WHERE overall_score > 0
                 )
                   AND w.overall_score > 0
@@ -236,114 +368,89 @@ def _load_waiver_data() -> pd.DataFrame:
             """).fetchdf()
 
             if not df.empty:
+                daily_df = _load_recent_daily_stats()
+                if not daily_df.empty:
+                    df = annotate_with_streaks(df, daily_df)
+                elif "streak" not in df.columns:
+                    df["streak"] = "—"
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load waiver data from DB: %s", exc)
     return STUB_WAIVER_DF.copy()
 
 
-def _fmt_stat(v: Any) -> str:
-    """Format a stat value for display."""
-    if isinstance(v, float):
-        return f"{v:.3f}" if v < 10 else str(int(v))
-    return str(v)
+def _load_transactions() -> pd.DataFrame:
+    """Load recent MLB transactions from MotherDuck.
+
+    Falls back to stubs when the table is empty or unavailable.
+    """
+    try:
+        with managed_connection() as conn:
+            df: pd.DataFrame = conn.execute(f"""
+                SELECT transaction_date, type, player_id, notes
+                FROM {FACT_TRANSACTIONS}
+                WHERE type IN (
+                    'mlb_injury','mlb_activation','mlb_callup','mlb_demotion'
+                )
+                ORDER BY transaction_date DESC
+                LIMIT 100
+            """).fetchdf()
+            if not df.empty:
+                return df
+    except (duckdb.Error, Exception) as exc:
+        logger.warning("Could not load transactions from DB: %s", exc)
+    return STUB_TRANSACTIONS_DF.copy()
 
 
-_STATUS_CLASS: dict[str, str] = {
-    "safe_win": "status-safe-win",
-    "flippable": "status-flippable",
-    "toss_up": "status-toss-up",
-    "safe_loss": "status-safe-loss",
-}
-
-
-def _win_pct_class(pct: float) -> str:
-    """Return CSS class based on win probability (0–1)."""
-    if pct >= 0.65:
-        return "win-high"
-    if pct >= 0.35:
-        return "win-mid"
-    return "win-low"
-
-
-def _html_table(headers: list[str], rows: list[list[Any]]) -> Tag:
-    """Build a styled HTML table matching the Savant theme."""
-    th_cells = [ui.tags.th(h) for h in headers]
-    tbody_rows: list[Any] = []
-    for row in rows:
-        td_cells = []
-        for cell in row:
-            if isinstance(cell, Tag):
-                td_cells.append(ui.tags.td(cell))
-            else:
-                td_cells.append(ui.tags.td(str(cell)))
-        tbody_rows.append(ui.tags.tr(*td_cells))
-    return ui.tags.table(
-        ui.tags.thead(ui.tags.tr(*th_cells)),
-        ui.tags.tbody(*tbody_rows),
-        class_="shiny-data-frame table table-sm",
-        style="width:100%;",
-    )
+# ── Server ─────────────────────────────────────────────────────────────────
 
 
 def server(input: Inputs, output: Outputs, session: Session) -> None:
     """Shiny server function wiring reactive calcs and output renderers."""
 
-    # ── Refresh trigger ───────────────────────────────────────────────────────
     _refresh_counter: reactive.Value[int] = reactive.Value(0)
 
-    # ── Reactive data sources ──────────────────────────────────────────────────
+    # ── Reactive data ─────────────────────────────────────────────────────
 
     @reactive.calc
     def data_freshness() -> dict[str, object]:
-        """Data freshness metadata."""
-        _refresh_counter()  # depend on refresh trigger
+        _refresh_counter()
         return _load_data_freshness()
 
     @render.ui
     def data_status_banner() -> Tag:
-        """Show data freshness / offline status banner at top of every tab."""
         freshness = data_freshness()
         is_offline = bool(freshness.get("is_offline", False))
         is_stale = bool(freshness.get("is_stale", False))
         generated_at = freshness.get("generated_at")
-
         report_date = freshness.get("report_date")
         if is_offline:
             error_detail = str(freshness.get("error", ""))
-            msg = "\u26a0\ufe0f Offline \u2014 showing cached data."
+            msg = "⚠️ Offline — showing cached data."
             if error_detail:
                 msg += f" ({error_detail[:120]})"
-            return ui.div(
-                ui.span(msg),
-                class_="alert alert-danger mb-0 py-1",
-                role="alert",
-            )
+            return ui.div(ui.span(msg), class_="alert alert-danger mb-0 py-1")
         elif is_stale:
             return ui.div(
                 ui.span(
-                    f"\u26a0\ufe0f Showing most recent data (pipeline last ran: {report_date})"
+                    f"⚠️ Showing most recent data (pipeline last ran: {report_date})"
                 ),
                 class_="alert alert-warning mb-0 py-1",
-                role="alert",
             )
         elif generated_at:
             return ui.div(
-                ui.span(f"\u2705 Data as of {generated_at}"),
+                ui.span(f"✅ Data as of {generated_at}"),
                 class_="alert alert-success mb-0 py-1",
-                role="alert",
             )
         return ui.div()
 
     @reactive.calc
     def daily_report() -> dict[str, Any]:
-        """Cached daily report dict."""
-        _refresh_counter()  # depend on refresh trigger
+        _refresh_counter()
         return _load_daily_report()
 
     @reactive.calc
     def matchup_data() -> pd.DataFrame:
-        """Matchup summary as a tidy DataFrame."""
         report = daily_report()
         rows = report.get("matchup_summary", [])
         if not isinstance(rows, list):
@@ -352,60 +459,192 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
 
     @reactive.calc
     def roster_data() -> pd.DataFrame:
-        """Current roster DataFrame."""
-        _refresh_counter()  # depend on refresh trigger
+        _refresh_counter()
         return _load_roster()
 
     @reactive.calc
     def waiver_data() -> pd.DataFrame:
-        """Filtered waiver wire DataFrame."""
-        _refresh_counter()  # depend on refresh trigger
+        _refresh_counter()
         df = _load_waiver_data()
-
         pos = str(input.position_filter())
         if pos and pos != "All":
             df = df[df["position"].str.contains(pos, na=False)]
-
-        callup_only: bool = bool(input.callup_only())
-        if callup_only:
+        if bool(input.callup_only()):
             df = df[df["callup"].astype(bool)]
-
+        streak_filter = str(input.streak_filter())
+        if streak_filter == "🔥 Hot":
+            df = df[df["streak"] == "🔥 Hot"]
+        elif streak_filter == "❄️ Cold":
+            df = df[df["streak"] == "❄️ Cold"]
         return df.reset_index(drop=True)
 
-    # ── Outputs ────────────────────────────────────────────────────────────────
+    @reactive.calc
+    def transactions_data() -> pd.DataFrame:
+        _refresh_counter()
+        return _load_transactions()
 
-    # Tab 1: Dashboard
+    # ── Dashboard ─────────────────────────────────────────────────────────
 
-    @render.text
-    def header_date() -> str:
+    @render.ui
+    def week_summary_ui() -> Tag:
         report = daily_report()
-        return str(report.get("report_date", "\u2014"))
-
-    @render.text
-    def header_week() -> str:
-        report = daily_report()
-        return f"Week {report.get('week_number', '\u2014')}"
-
-    @render.text
-    def header_ip_pace() -> str:
-        report = daily_report()
+        report_date = str(report.get("report_date", "—"))
+        week = report.get("week_number", "—")
         ip_pace = report.get("ip_pace", {})
-        if not isinstance(ip_pace, dict):
-            return "\u2014"
-        current = ip_pace.get("current_ip", 0.0)
-        projected = ip_pace.get("projected_ip", 0.0)
-        min_ip = ip_pace.get("min_ip", 21)
-        on_pace = ip_pace.get("on_pace", False)
-        indicator = "\u2713" if on_pace else "\u26a0"
-        return f"{indicator} {current}/{min_ip} (proj {projected})"
+        if isinstance(ip_pace, dict):
+            current_ip = ip_pace.get("current_ip", 0.0)
+            min_ip = ip_pace.get("min_ip", 21)
+            projected_ip = ip_pace.get("projected_ip", 0.0)
+            on_pace = ip_pace.get("on_pace", False)
+        else:
+            current_ip = min_ip = projected_ip = 0.0
+            on_pace = False
+        ip_icon = "✓" if on_pace else "⚠"
+        ip_color = "#2e7d32" if on_pace else "#e65100"
+        return ui.layout_columns(
+            _stat_box("Report Date", str(report_date)),
+            _stat_box("Matchup Week", f"Week {week}"),
+            ui.tags.div(
+                ui.tags.span(
+                    "IP PACE",
+                    style="font-size:0.65rem;font-weight:700;text-transform:uppercase;"
+                    "letter-spacing:0.08em;color:#7ab8d4;display:block;",
+                ),
+                ui.tags.div(
+                    ui.tags.span(f"{ip_icon} ", style=f"color:{ip_color};"),
+                    ui.tags.span(
+                        f"{current_ip}/{min_ip} IP",
+                        style="font-weight:700;color:#fff;",
+                    ),
+                    ui.tags.span(
+                        f"  proj {projected_ip}",
+                        style="font-size:0.78rem;color:#8ab;",
+                    ),
+                    style="font-size:1.0rem;",
+                ),
+                style="background:#132747;border-radius:4px;border-left:3px solid "
+                f"{'#1a7fa1' if on_pace else '#e65100'};"
+                "padding:0.5rem 0.75rem;height:100%;",
+            ),
+            ui.div(
+                ui.input_action_button(
+                    "refresh_btn", "↻  Refresh", class_="btn-primary"
+                ),
+                class_="d-flex align-items-center justify-content-center",
+            ),
+            col_widths=[3, 3, 4, 2],
+        )
+
+    @render.ui
+    def projected_wins_ui() -> Tag:
+        df = matchup_data()
+        if df.empty:
+            return ui.p("No matchup data.", style="color:#888;padding:0.5rem;")
+        probs = df["win_prob"].tolist()
+        expected_wins = sum(probs)
+        n = len(probs)
+        mwp = match_win_probability(probs)
+        projected_cat = round(expected_wins)
+        if mwp >= 0.65:
+            bar_color, outlook = "#2e7d32", "Favorable"
+        elif mwp >= 0.40:
+            bar_color, outlook = "#e65100", "Competitive"
+        else:
+            bar_color, outlook = "#c62828", "Difficult"
+        safe_wins = int((df["win_prob"] >= 0.70).sum())
+        in_play = int(((df["win_prob"] >= 0.35) & (df["win_prob"] < 0.70)).sum())
+        safe_losses = int((df["win_prob"] < 0.35).sum())
+        return ui.layout_columns(
+            _stat_box("Projected Cats", f"{projected_cat}/{n}"),
+            ui.tags.div(
+                ui.tags.span(
+                    "MATCH WIN PROB",
+                    style="font-size:0.65rem;font-weight:700;text-transform:uppercase;"
+                    "letter-spacing:0.08em;color:#7ab8d4;display:block;",
+                ),
+                ui.tags.div(
+                    ui.tags.span(
+                        f"{mwp * 100:.0f}%",
+                        style=f"font-size:1.1rem;font-weight:700;color:{bar_color};",
+                    ),
+                    ui.tags.span(
+                        f" {outlook}",
+                        style=f"font-size:0.78rem;color:{bar_color};",
+                    ),
+                ),
+                ui.tags.div(
+                    ui.tags.div(
+                        style=f"width:{mwp * 100:.0f}%;height:6px;"
+                        f"background:{bar_color};border-radius:3px;",
+                    ),
+                    style="width:100%;background:#2a3f5a;border-radius:3px;margin-top:4px;",
+                ),
+                style="background:#132747;border-radius:4px;border-left:3px solid "
+                f"{bar_color};padding:0.5rem 0.75rem;height:100%;",
+            ),
+            ui.tags.div(
+                ui.tags.span(
+                    "CATEGORY SPLIT",
+                    style="font-size:0.65rem;font-weight:700;text-transform:uppercase;"
+                    "letter-spacing:0.08em;color:#7ab8d4;display:block;",
+                ),
+                ui.tags.div(
+                    ui.tags.span(
+                        f"🟢 {safe_wins}",
+                        style="color:#2e7d32;font-weight:700;margin-right:8px;",
+                    ),
+                    ui.tags.span(
+                        f"🟡 {in_play}",
+                        style="color:#e65100;font-weight:700;margin-right:8px;",
+                    ),
+                    ui.tags.span(
+                        f"🔴 {safe_losses}",
+                        style="color:#c62828;font-weight:700;",
+                    ),
+                    style="font-size:1.0rem;margin-top:2px;",
+                ),
+                style="background:#132747;border-radius:4px;border-left:3px solid "
+                "#1a7fa1;padding:0.5rem 0.75rem;height:100%;",
+            ),
+            col_widths=[4, 4, 4],
+        )
 
     @render.data_frame
     def lineup_table() -> pd.DataFrame:
         report = daily_report()
         lineup = report.get("lineup", {})
         if not isinstance(lineup, dict):
-            return pd.DataFrame(columns=["Slot", "Player ID"])
-        rows = [{"Slot": slot, "Player ID": pid} for slot, pid in lineup.items()]
+            return pd.DataFrame(columns=["Slot", "Player", "Streak"])
+        roster = roster_data()
+        id_to_name: dict[str, str] = {}
+        id_to_streak: dict[str, str] = {}
+        if not roster.empty:
+            if "player_id" in roster.columns and "player_name" in roster.columns:
+                id_to_name = dict(
+                    zip(
+                        roster["player_id"].astype(str),
+                        roster["player_name"].astype(str),
+                        strict=False,
+                    )
+                )
+            if "player_id" in roster.columns and "streak" in roster.columns:
+                id_to_streak = dict(
+                    zip(
+                        roster["player_id"].astype(str),
+                        roster["streak"].astype(str),
+                        strict=False,
+                    )
+                )
+        rows = []
+        for slot, pid in lineup.items():
+            pid_str = str(pid)
+            rows.append(
+                {
+                    "Slot": slot,
+                    "Player": id_to_name.get(pid_str, pid_str),
+                    "Streak": id_to_streak.get(pid_str, "—"),
+                }
+            )
         return pd.DataFrame(rows)
 
     @render.ui
@@ -420,21 +659,21 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         for _, r in df.iterrows():
             status = str(r.get("status", ""))
             win_prob = float(r.get("win_prob", 0.5))
-            status_cell = ui.tags.span(
-                status.replace("_", " ").title(),
-                class_=_STATUS_CLASS.get(status, ""),
-            )
-            win_cell = ui.tags.span(
-                f"{win_prob * 100:.0f}%",
-                class_=_win_pct_class(win_prob),
-            )
+            cat = str(r.get("category", ""))
+            cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
             rows.append(
                 [
-                    str(r.get("category", "")).upper(),
+                    cat_label,
                     _fmt_stat(r.get("my_value", "")),
                     _fmt_stat(r.get("opp_value", "")),
-                    win_cell,
-                    status_cell,
+                    ui.tags.span(
+                        f"{win_prob * 100:.0f}%",
+                        class_=_win_pct_class(win_prob),
+                    ),
+                    ui.tags.span(
+                        _STATUS_LABEL.get(status, status),
+                        class_=_STATUS_CLASS.get(status, ""),
+                    ),
                 ]
             )
         return _html_table(headers, rows)
@@ -445,11 +684,11 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         raw_adds = report.get("adds", [])
         if not isinstance(raw_adds, list) or len(raw_adds) == 0:
             return pd.DataFrame(columns=["Add", "Drop", "Score", "Reason", "Improves"])
-        rows: list[dict[str, Any]] = []
+        rows_out: list[dict[str, Any]] = []
         for item in raw_adds:
             a: dict[str, Any] = item if isinstance(item, dict) else {}
             cats = a.get("categories_improved", [])
-            rows.append(
+            rows_out.append(
                 {
                     "Add": str(a.get("add_player_id", "")),
                     "Drop": str(a.get("drop_player_id", "")),
@@ -460,35 +699,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     else str(cats),
                 }
             )
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows_out)
 
-    @render.ui
-    def callup_alerts_ui() -> Tag:
-        report = daily_report()
-        raw_alerts = report.get("callup_alerts", [])
-        if not isinstance(raw_alerts, list) or len(raw_alerts) == 0:
-            return ui.p("No call-up alerts today.")
-        items: list[Any] = []
-        for item in raw_alerts:
-            alert: dict[str, Any] = item if isinstance(item, dict) else {}
-            name = str(alert.get("player_name", "Unknown"))
-            team = str(alert.get("team", ""))
-            level = str(alert.get("from_level", ""))
-            days = alert.get("days_since_callup", 0)
-            items.append(
-                ui.div(
-                    ui.strong(f"{name} ({team})"),
-                    ui.span(
-                        f" \u2014 Called up from {level}, {days} day(s) ago",
-                        style="margin-left: 0.5rem;",
-                    ),
-                    class_="alert alert-warning mb-2",
-                    role="alert",
-                )
-            )
-        return ui.div(*items)
-
-    # Tab 2: Matchup Detail
+    # ── Matchup Detail ────────────────────────────────────────────────────
 
     @render.ui
     def matchup_detail_ui() -> Tag:
@@ -504,102 +717,429 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             win_prob = float(r.get("win_prob", 0.5))
             margin = float(r.get("margin_pct", 0.0))
             leading = bool(r.get("my_leads", False))
-            status_cell = ui.tags.span(
-                status.replace("_", " ").title(),
-                class_=_STATUS_CLASS.get(status, ""),
-            )
-            win_cell = ui.tags.span(
-                f"{win_prob * 100:.0f}%",
-                class_=_win_pct_class(win_prob),
-            )
+            cat = str(r.get("category", ""))
+            cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
             rows.append(
                 [
-                    str(r.get("category", "")).upper(),
+                    cat_label,
                     _fmt_stat(r.get("my_value", "")),
                     _fmt_stat(r.get("opp_value", "")),
                     ui.tags.span("▲ Yes", style="color:#2e7d32;font-weight:700;")
                     if leading
                     else ui.tags.span("▼ No", style="color:#c62828;font-weight:700;"),
                     f"{margin * 100:.1f}%",
-                    win_cell,
-                    status_cell,
+                    ui.tags.span(
+                        f"{win_prob * 100:.0f}%",
+                        class_=_win_pct_class(win_prob),
+                    ),
+                    ui.tags.span(
+                        _STATUS_LABEL.get(status, status),
+                        class_=_STATUS_CLASS.get(status, ""),
+                    ),
                 ]
             )
         return _html_table(headers, rows)
 
-    # Tab 3: Waiver Wire
+    @render.ui
+    def matchup_advanced_ui() -> Tag:
+        df = matchup_data()
+        if df.empty:
+            return ui.p("No data.", style="color:#888;")
 
-    @render.data_frame
-    def waiver_table() -> pd.DataFrame:
+        probs = df["win_prob"].tolist()
+        mwp = match_win_probability(probs)
+        expected_wins = sum(probs)
+
+        safe_wins_df = df[df["win_prob"] >= 0.70]
+        in_play_df = df[(df["win_prob"] >= 0.35) & (df["win_prob"] < 0.70)]
+        safe_losses_df = df[df["win_prob"] < 0.35]
+
+        def _pills(sub: pd.DataFrame, color: str) -> list[Tag]:
+            return [
+                ui.tags.span(
+                    f"{_CATEGORY_META.get(str(r['category']), {}).get('label', str(r['category']).upper())} "
+                    f"{float(r['win_prob']) * 100:.0f}%",
+                    style=f"display:inline-block;background:{color};color:#fff;"
+                    "border-radius:4px;padding:2px 8px;margin:2px;"
+                    "font-size:0.75rem;font-weight:600;",
+                )
+                for _, r in sub.iterrows()
+            ]
+
+        flip_rows: list[list[Any]] = []
+        for _, r in in_play_df.sort_values(
+            "win_prob", key=lambda s: abs(s - 0.5)
+        ).iterrows():
+            cat = str(r.get("category", ""))
+            cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
+            wp = float(r.get("win_prob", 0.5))
+            # Marginal match win prob if this category flips
+            probs_flipped = [1.0 - wp if p == wp else p for p in probs]
+            mwp_flipped = match_win_probability(probs_flipped)
+            delta = mwp_flipped - mwp
+            delta_str = f"+{delta * 100:.1f}%" if delta >= 0 else f"{delta * 100:.1f}%"
+            leading = bool(r.get("my_leads", False))
+            flip_rows.append(
+                [
+                    cat_label,
+                    f"{'▲' if leading else '▼'} {_fmt_stat(r.get('my_value', ''))}",
+                    _fmt_stat(r.get("opp_value", "")),
+                    ui.tags.span(f"{wp * 100:.0f}%", class_=_win_pct_class(wp)),
+                    ui.tags.span(
+                        delta_str,
+                        style="color:#1a7fa1;font-weight:700;"
+                        if delta >= 0
+                        else "color:#c62828;font-weight:700;",
+                    ),
+                ]
+            )
+
+        flip_table: Tag = (
+            _html_table(
+                ["Category", "Mine", "Opp", "Win%", "Match Δ If Flipped"],
+                flip_rows,
+            )
+            if flip_rows
+            else ui.p("No contested categories.", style="color:#888;")
+        )
+
+        return ui.div(
+            ui.tags.div(
+                ui.tags.span("MATCH WIN PROBABILITY: ", style="font-weight:700;"),
+                ui.tags.span(
+                    f"{mwp * 100:.1f}%",
+                    style="font-weight:700;color:"
+                    + ("#2e7d32" if mwp >= 0.55 else "#c62828")
+                    + ";",
+                ),
+                ui.tags.span(
+                    f"  |  Expected category wins: {expected_wins:.1f}/12",
+                    style="color:#4a6282;",
+                ),
+                style="font-size:0.85rem;margin-bottom:0.75rem;",
+            ),
+            ui.tags.p(
+                "BATTLE ZONES",
+                style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;"
+                "color:#4a6282;margin-bottom:4px;font-weight:700;",
+            ),
+            ui.div(*_pills(safe_wins_df, "#2e7d32")),
+            ui.div(*_pills(in_play_df, "#e65100"), style="margin-top:3px;"),
+            ui.div(*_pills(safe_losses_df, "#c62828"), style="margin-top:3px;"),
+            ui.tags.p(
+                ui.tags.strong("CLUTCH FLIP ANALYSIS"),
+                ui.tags.span(
+                    " — change in match win% if you flip this contested category",
+                    style="font-weight:400;color:#4a6282;",
+                ),
+                style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;"
+                "color:#132747;margin-top:1rem;margin-bottom:4px;",
+            ),
+            flip_table,
+            style="padding:0.25rem 0;",
+        )
+
+    # ── Waiver Wire ───────────────────────────────────────────────────────
+
+    @render.ui
+    def waiver_table_ui() -> Tag:
         df = waiver_data()
-        display_cols = [
-            "rank",
-            "player_name",
-            "team",
-            "position",
-            "score",
-            "callup",
-            "from_level",
-            "days_since_callup",
-        ]
-        available = [c for c in display_cols if c in df.columns]
-        return df[available].rename(
-            columns={
-                "rank": "Rank",
-                "player_name": "Player",
-                "team": "Team",
-                "position": "Position",
-                "score": "Score",
-                "callup": "Callup?",
-                "from_level": "From",
-                "days_since_callup": "Days Since Callup",
-            }
-        )
+        if df.empty:
+            return ui.p("No waiver wire data.", style="color:#888;padding:0.5rem;")
+        headers = ["#", "Player", "Team", "Pos", "Score ⓘ", "Streak", "Key Stats"]
+        rows_out: list[list[Any]] = []
+        for _, r in df.iterrows():
+            pos = str(r.get("position", ""))
+            is_p = any(p in pos.upper() for p in ("SP", "RP"))
+            if is_p:
+                key_stats = (
+                    f"W:{r.get('w', '—')} K:{r.get('k', '—')} "
+                    f"WHIP:{r.get('whip', '—')} SV+H:{r.get('sv_h', '—')}"
+                )
+            else:
+                key_stats = (
+                    f"AVG:{r.get('avg', '—')} OPS:{r.get('ops', '—')} "
+                    f"HR:{r.get('hr', '—')} SB:{r.get('sb', '—')}"
+                )
+            callup_badge = (
+                ui.tags.span(
+                    " ⬆",
+                    style="background:#f5a623;color:#132747;border-radius:3px;"
+                    "padding:1px 4px;font-size:0.68rem;font-weight:700;margin-left:4px;",
+                )
+                if r.get("callup")
+                else ui.tags.span()
+            )
+            rows_out.append(
+                [
+                    str(int(r.get("rank", 0))),
+                    ui.tags.span(str(r.get("player_name", "")), callup_badge),
+                    str(r.get("team", "")),
+                    pos,
+                    ui.tags.span(
+                        f"{float(r.get('score', 0)):.1f}",
+                        style="font-weight:700;color:#132747;",
+                    ),
+                    _streak_badge(str(r.get("streak", "—"))),
+                    ui.tags.span(key_stats, style="font-size:0.73rem;color:#4a6282;"),
+                ]
+            )
+        return _html_table(headers, rows_out)
 
-    # Tab 4: Roster
+    # ── Roster ────────────────────────────────────────────────────────────
 
-    @render.data_frame
-    def roster_table() -> pd.DataFrame:
+    @render.ui
+    def hitter_roster_ui() -> Tag:
         df = roster_data()
-        display_cols = [
-            "slot",
-            "player_name",
-            "team",
-            "position",
-            "h",
-            "hr",
-            "sb",
-            "bb",
-            "avg",
-            "ops",
-            "w",
-            "k",
-            "whip",
-            "k_bb",
-            "sv_h",
+        if df.empty:
+            return ui.p("No roster data.", style="color:#888;")
+        hitters = df[~df["slot"].isin(_PITCHER_SLOTS)].copy()
+        if hitters.empty:
+            return ui.p("No hitters found.", style="color:#888;")
+        headers = [
+            "Slot",
+            "Player",
+            "Pos",
+            "H",
+            "HR",
+            "SB",
+            "BB",
+            "AVG",
+            "OPS",
+            "Streak",
         ]
-        available = [c for c in display_cols if c in df.columns]
-        return df[available].rename(
-            columns={
-                "slot": "Slot",
-                "player_name": "Player",
-                "team": "Team",
-                "position": "Pos",
-                "h": "H",
-                "hr": "HR",
-                "sb": "SB",
-                "bb": "BB",
-                "avg": "AVG",
-                "ops": "OPS",
-                "w": "W",
-                "k": "K",
-                "whip": "WHIP",
-                "k_bb": "K/BB",
-                "sv_h": "SV+H",
-            }
-        )
+        rows_out: list[list[Any]] = []
+        for _, r in hitters.iterrows():
+            rows_out.append(
+                [
+                    str(r.get("slot", "")),
+                    str(r.get("player_name", "")),
+                    str(r.get("position", "")),
+                    str(r.get("h", "—")),
+                    str(r.get("hr", "—")),
+                    str(r.get("sb", "—")),
+                    str(r.get("bb", "—")),
+                    _fmt_stat(r.get("avg", 0.0)),
+                    _fmt_stat(r.get("ops", 0.0)),
+                    _streak_badge(str(r.get("streak", "—"))),
+                ]
+            )
+        return _html_table(headers, rows_out)
 
-    # ── Manual refresh ─────────────────────────────────────────────────────────
+    @render.ui
+    def pitcher_roster_ui() -> Tag:
+        df = roster_data()
+        if df.empty:
+            return ui.p("No roster data.", style="color:#888;")
+        pitchers = df[df["slot"].isin(_PITCHER_SLOTS)].copy()
+        if pitchers.empty:
+            return ui.p("No pitchers found.", style="color:#888;")
+        headers = ["Slot", "Player", "Pos", "W", "K", "WHIP", "K/BB", "SV+H", "Streak"]
+        rows_out: list[list[Any]] = []
+        for _, r in pitchers.iterrows():
+            whip_val = float(r.get("whip", 0.0))
+            whip_color = (
+                "#2e7d32"
+                if whip_val < 1.00
+                else "#e65100"
+                if whip_val < 1.30
+                else "#c62828"
+            )
+            rows_out.append(
+                [
+                    str(r.get("slot", "")),
+                    str(r.get("player_name", "")),
+                    str(r.get("position", "")),
+                    str(r.get("w", "—")),
+                    str(r.get("k", "—")),
+                    ui.tags.span(
+                        _fmt_stat(whip_val) if whip_val else "—",
+                        style=f"color:{whip_color};font-weight:600;",
+                    ),
+                    _fmt_stat(r.get("k_bb", 0.0)),
+                    str(r.get("sv_h", "—")),
+                    _streak_badge(str(r.get("streak", "—"))),
+                ]
+            )
+        return _html_table(headers, rows_out)
+
+    # ── Transactions ──────────────────────────────────────────────────────
+
+    @render.ui
+    def transactions_ui() -> Tag:
+        df = transactions_data()
+        type_filter = str(input.transaction_type_filter())
+        if type_filter != "All":
+            df = df[df["type"] == type_filter]
+        if df.empty:
+            return ui.p("No transactions found.", style="color:#888;padding:0.5rem;")
+        headers = ["Date", "Type", "Player", "Notes"]
+        rows_out: list[list[Any]] = []
+        for _, r in df.head(50).iterrows():
+            t = str(r.get("type", ""))
+            label, color = _TRANSACTION_TYPE_LABELS.get(t, (t, "#333"))
+            player_name = str(r.get("player_name", r.get("player_id", "—")))
+            team = str(r.get("team", ""))
+            pos = str(r.get("position", ""))
+            rows_out.append(
+                [
+                    str(r.get("transaction_date", "—"))[:10],
+                    ui.tags.span(
+                        label,
+                        style=f"color:{color};font-weight:700;font-size:0.75rem;",
+                    ),
+                    ui.tags.span(
+                        player_name,
+                        ui.tags.span(
+                            f" {team} · {pos}" if team and pos else "",
+                            style="color:#4a6282;font-size:0.75rem;",
+                        ),
+                    ),
+                    ui.tags.span(
+                        str(r.get("notes", "")),
+                        style="font-size:0.75rem;color:#4a6282;",
+                    ),
+                ]
+            )
+        return _html_table(headers, rows_out)
+
+    # ── Trades ────────────────────────────────────────────────────────────
+
+    @render.ui
+    def trades_ui() -> Tag:
+        trades = STUB_TRADES
+        if not trades:
+            return ui.p("No trade proposals available.", style="color:#888;")
+        cards: list[Any] = []
+        for trade in trades:
+            acc_raw = trade.get("acceptance_pct", 50)
+            acc = int(acc_raw) if isinstance(acc_raw, (int, float)) else 50
+            bar_color = (
+                "#2e7d32" if acc >= 65 else "#e65100" if acc >= 50 else "#c62828"
+            )
+            give = str(trade.get("give_player", ""))
+            give_team = str(trade.get("give_team", ""))
+            give_helps = trade.get("give_helps", [])
+            receive = str(trade.get("receive_player", ""))
+            receive_team = str(trade.get("receive_team", ""))
+            receive_helps = trade.get("receive_helps", [])
+            gain = str(trade.get("my_category_gain", ""))
+            rationale = str(trade.get("rationale", ""))
+
+            def _pills(cats: object, bg: str) -> list[Tag]:
+                if not isinstance(cats, list):
+                    return []
+                return [
+                    ui.tags.span(
+                        str(c),
+                        style=f"background:{bg};color:#fff;border-radius:3px;"
+                        "padding:1px 6px;margin:1px;font-size:0.68rem;font-weight:600;",
+                    )
+                    for c in cats
+                ]
+
+            cards.append(
+                ui.div(
+                    ui.layout_columns(
+                        ui.div(
+                            ui.tags.div(
+                                ui.tags.span(
+                                    "YOU GIVE",
+                                    style="font-size:0.65rem;font-weight:700;"
+                                    "text-transform:uppercase;color:#c62828;display:block;",
+                                ),
+                                ui.tags.div(
+                                    ui.tags.strong(give),
+                                    ui.tags.span(
+                                        f" ({give_team})",
+                                        style="color:#4a6282;font-size:0.8rem;",
+                                    ),
+                                    style="font-size:0.95rem;margin:2px 0;",
+                                ),
+                                ui.div(
+                                    *_pills(give_helps, "#4a6282"),
+                                    style="margin-top:2px;",
+                                ),
+                                style="padding:0.5rem;",
+                            ),
+                        ),
+                        ui.div(
+                            ui.tags.span(
+                                "⇌",
+                                style="font-size:1.4rem;color:#1a7fa1;",
+                            ),
+                            class_="d-flex align-items-center justify-content-center",
+                        ),
+                        ui.div(
+                            ui.tags.div(
+                                ui.tags.span(
+                                    "YOU GET",
+                                    style="font-size:0.65rem;font-weight:700;"
+                                    "text-transform:uppercase;color:#2e7d32;display:block;",
+                                ),
+                                ui.tags.div(
+                                    ui.tags.strong(receive),
+                                    ui.tags.span(
+                                        f" ({receive_team})",
+                                        style="color:#4a6282;font-size:0.8rem;",
+                                    ),
+                                    style="font-size:0.95rem;margin:2px 0;",
+                                ),
+                                ui.div(
+                                    *_pills(receive_helps, "#1a7fa1"),
+                                    style="margin-top:2px;",
+                                ),
+                                style="padding:0.5rem;",
+                            ),
+                        ),
+                        col_widths=[5, 2, 5],
+                    ),
+                    ui.div(
+                        ui.tags.div(
+                            ui.tags.span(
+                                "NET GAIN: ",
+                                style="font-weight:700;color:#132747;font-size:0.75rem;",
+                            ),
+                            ui.tags.span(
+                                gain, style="color:#1a7fa1;font-size:0.75rem;"
+                            ),
+                            style="margin-bottom:4px;",
+                        ),
+                        ui.tags.div(
+                            rationale,
+                            style="font-size:0.77rem;color:#4a6282;margin-bottom:6px;",
+                        ),
+                        ui.layout_columns(
+                            ui.div(
+                                ui.tags.span(
+                                    "EST. ACCEPTANCE: ",
+                                    style="font-size:0.72rem;font-weight:700;color:#132747;",
+                                ),
+                                ui.tags.span(
+                                    f"{acc}%",
+                                    style=f"font-size:0.72rem;font-weight:700;color:{bar_color};",
+                                ),
+                                ui.div(
+                                    ui.div(
+                                        style=f"width:{acc}%;height:5px;"
+                                        f"background:{bar_color};border-radius:3px;",
+                                    ),
+                                    style="width:100%;background:#dde3eb;"
+                                    "border-radius:3px;margin-top:2px;",
+                                ),
+                            ),
+                            col_widths=[12],
+                        ),
+                        style="padding:0.4rem 0.75rem 0.5rem 0.75rem;"
+                        "border-top:1px solid #edf1f7;",
+                    ),
+                    style="border:1px solid #d8e1eb;border-radius:6px;"
+                    "margin-bottom:0.75rem;background:#fff;",
+                )
+            )
+        return ui.div(*cards)
+
+    # ── Manual refresh ────────────────────────────────────────────────────
 
     @reactive.effect
     @reactive.event(input.refresh_btn)
