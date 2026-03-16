@@ -790,7 +790,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         proj_lookup: dict[str, dict[str, Any]] = {}
         if not proj_df.empty and "player_id" in proj_df.columns:
             for _, row in proj_df.iterrows():
-                proj_lookup[str(row["player_id"])] = {str(k): v for k, v in row.to_dict().items()}
+                proj_lookup[str(row["player_id"])] = {
+                    str(k): v for k, v in row.to_dict().items()
+                }
 
         def _proj_row(
             player_id: str, override: dict[str, Any] | None
