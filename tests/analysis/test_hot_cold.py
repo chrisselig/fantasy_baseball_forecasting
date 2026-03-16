@@ -11,6 +11,7 @@ from src.analysis.hot_cold import (
     _COLD,
     _HOT,
     _NEUTRAL,
+    _WARM,
     _hitter_streak,
     _pitcher_streak,
     annotate_with_streaks,
@@ -152,6 +153,28 @@ def test_pitcher_neutral_no_ip() -> None:
     rows = [_pitcher_row("p2", "2025-06-01", ip=0.0)]
     df = pd.DataFrame(rows)
     assert _pitcher_streak(df) == _NEUTRAL
+
+
+def test_pitcher_warm_one_hot_condition() -> None:
+    # WHIP = (4+2)/7 = 0.857 → <1.10 (hot); RA9 = 6*9/7 = 7.71 → >5.00 (cold)
+    # K9 = 6*9/7 = 7.71 → neither; KBB = 6/2 = 3.0 → neither (not strictly >3.0)
+    # hot_score=1, cold_score=1 → Warm
+    rows = [
+        _pitcher_row("p2", "2025-06-05", ip=7.0, k=6, walks_allowed=2, hits_allowed=4)
+    ]
+    df = pd.DataFrame(rows)
+    assert _pitcher_streak(df) == _WARM
+
+
+def test_pitcher_hot_whip_threshold_1_10() -> None:
+    # WHIP = (3+2)/5 = 1.0 → now qualifies as hot (old threshold was 1.00)
+    # RA9 = 5*9/5 = 9.0 → >5.00 (cold); K9 = 10*9/5 = 18.0 → hot; KBB = 10/2 = 5.0 → hot
+    # hot_score=3, → HOT
+    rows = [
+        _pitcher_row("p2", "2025-06-05", ip=5.0, k=10, walks_allowed=2, hits_allowed=3)
+    ]
+    df = pd.DataFrame(rows)
+    assert _pitcher_streak(df) == _HOT
 
 
 # ── streak_label ────────────────────────────────────────────────────────────

@@ -19,19 +19,22 @@ Hitter Streak Logic — ≥ 2 of 4 conditions → Hot / Cold
 
 Pitcher Streak Logic — rolling last 10 days (~2 starts) — ≥ 2 of 4
 ─────────────────────────────────────────────────────────────────────
-  HOT:
-    1. WHIP  : (hits_allowed + walks_allowed) / IP < 1.00
+  HOT (≥ 2 of 4 conditions):
+    1. WHIP  : (hits_allowed + walks_allowed) / IP < 1.10
     2. RA9   : (hits_allowed + walks_allowed) × 9 / IP < 2.50
     3. K/9   : k × 9 / IP > 9.0
     4. K/BB  : k / walks_allowed > 3.0
 
-  COLD:
-    1. WHIP  : > 1.50
+  WARM (exactly 1 hot condition, 0 cold conditions):
+    Label applied when a pitcher is pitching well but not dominant.
+
+  COLD (≥ 2 of 4 conditions):
+    1. WHIP  : > 1.60
     2. RA9   : > 5.00
     3. K/9   : < 6.0
     4. K/BB  : < 1.5
 
-Labels: "🔥 Hot" | "❄️ Cold" | "—" (when insufficient data)
+Labels: "🔥 Hot" | "☀️ Warm" | "❄️ Cold" | "—" (when insufficient data)
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ import datetime
 import pandas as pd
 
 _HOT = "🔥 Hot"
+_WARM = "☀️ Warm"
 _COLD = "❄️ Cold"
 _NEUTRAL = "—"
 _MIN_HITTER_DAYS = 3  # need at least 3 game-days to compute hitter streak
@@ -116,14 +120,14 @@ def _hitter_streak(recent: pd.DataFrame) -> str:
 
 
 def _pitcher_streak(recent: pd.DataFrame) -> str:
-    """Return hot/cold label for a pitcher given their recent daily rows.
+    """Return hot/cold/warm label for a pitcher given their recent daily rows.
 
     Args:
         recent: Rows from fact_player_stats_daily, sorted oldest→newest,
                 for a single player over the last 10 days.
 
     Returns:
-        "🔥 Hot" | "❄️ Cold" | "—"
+        "🔥 Hot" | "☀️ Warm" | "❄️ Cold" | "—"
     """
     ip = float(recent["ip"].fillna(0).sum())
     if ip < _MIN_PITCHER_IP:
@@ -139,7 +143,7 @@ def _pitcher_streak(recent: pd.DataFrame) -> str:
     kbb = k / wa if wa > 0 else (k if k > 0 else 0.0)
 
     hot_score = 0
-    if whip < 1.00:
+    if whip < 1.10:
         hot_score += 1
     if ra9 < 2.50:
         hot_score += 1
@@ -152,7 +156,7 @@ def _pitcher_streak(recent: pd.DataFrame) -> str:
         return _HOT
 
     cold_score = 0
-    if whip > 1.50:
+    if whip > 1.60:
         cold_score += 1
     if ra9 > 5.00:
         cold_score += 1
@@ -163,6 +167,9 @@ def _pitcher_streak(recent: pd.DataFrame) -> str:
 
     if cold_score >= 2:
         return _COLD
+
+    if hot_score == 1:
+        return _WARM
 
     return _NEUTRAL
 
