@@ -41,7 +41,9 @@ def get_connection() -> duckdb.DuckDBPyConnection:
     if token:
         connection_string = f"md:{_DATABASE_NAME}?motherduck_token={token}"
         logger.info("Connecting to MotherDuck database: %s", _DATABASE_NAME)
-        return duckdb.connect(connection_string)
+        conn = duckdb.connect(connection_string)
+        conn.execute(f"USE {_DATABASE_NAME}")
+        return conn
 
     logger.warning(
         "%s not set — using in-memory DuckDB (data will not persist)",
