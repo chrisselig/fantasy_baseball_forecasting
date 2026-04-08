@@ -85,6 +85,8 @@ def optimize_daily_lineup(
         players_with_games = set(schedule_df["player_id"].astype(str))
 
     # Eligible players: not in IL/NA
+    if roster_df.empty or "player_id" not in roster_df.columns:
+        return {}
     eligible_df = roster_df[~roster_df["slot"].isin({"IL", "NA"})].copy()
 
     # Parse eligible_positions into lists

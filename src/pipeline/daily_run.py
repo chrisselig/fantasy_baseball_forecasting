@@ -335,10 +335,10 @@ def _step_refresh_projections(
     week: int,
     season: int,
 ) -> dict[str, int]:
-    """Refresh Steamer projections for the current week.
+    """Refresh pace-based projections from MLB Stats API season stats.
 
-    Fetches Steamer projections via pybaseball and loads them into
-    fact_projections. Gracefully skips if pybaseball is unavailable.
+    Fetches season-to-date stats for rostered players and converts them
+    to per-game rates for weekly projection. Gracefully skips on failure.
 
     Args:
         conn: Open DuckDB connection.
@@ -352,9 +352,25 @@ def _step_refresh_projections(
     row_counts: dict[str, int] = {}
 
     try:
-        proj_df = mlb_client.get_steamer_projections(season=season)
+        # Get rostered players with mlb_ids
+        try:
+            players = conn.execute(
+                f"SELECT player_id, mlb_id FROM {DIM_PLAYERS} WHERE mlb_id IS NOT NULL"
+            ).fetchdf()
+        except duckdb.Error:
+            players = pd.DataFrame(columns=["player_id", "mlb_id"])
+
+        if players.empty:
+            logger.info("No players with mlb_id — skipping projections.")
+            return row_counts
+
+        mlb_ids: list[int] = players["mlb_id"].dropna().astype(int).tolist()
+        proj_df = mlb_client.get_season_stats_for_projections(
+            mlb_ids=mlb_ids, season=season
+        )
+
         if proj_df.empty:
-            logger.info("Steamer projections empty — skipping.")
+            logger.info("Pace-based projections empty — skipping.")
             return row_counts
 
         # Add required metadata columns
@@ -362,35 +378,15 @@ def _step_refresh_projections(
         proj_df["projection_date"] = today
         proj_df["target_week"] = week
 
-        # Join to get Yahoo player_id via fg_id or full_name
-        try:
-            crosswalk = conn.execute(
-                f"SELECT player_id, fg_id, full_name FROM {DIM_PLAYERS}"
-            ).fetchdf()
-        except duckdb.Error:
-            crosswalk = pd.DataFrame(columns=["player_id", "fg_id", "full_name"])
+        # Join to get Yahoo player_id via mlb_id
+        proj_with_id = proj_df.merge(
+            players[["player_id", "mlb_id"]],
+            on="mlb_id",
+            how="inner",
+        )
 
-        if not crosswalk.empty:
-            # Prefer fg_id join
-            if "fg_id" in proj_df.columns and "fg_id" in crosswalk.columns:
-                proj_with_id = proj_df.merge(
-                    crosswalk[["player_id", "fg_id"]].dropna(subset=["fg_id"]),
-                    on="fg_id",
-                    how="inner",
-                )
-            else:
-                proj_with_id = pd.DataFrame()
-
-            # Fall back to full_name join if fg_id join yielded nothing
-            if proj_with_id.empty and "full_name" in proj_df.columns:
-                proj_with_id = proj_df.merge(
-                    crosswalk[["player_id", "full_name"]],
-                    on="full_name",
-                    how="inner",
-                )
-
-            if not proj_with_id.empty:
-                row_counts[FACT_PROJECTIONS] = load_projections(conn, proj_with_id)
+        if not proj_with_id.empty:
+            row_counts[FACT_PROJECTIONS] = load_projections(conn, proj_with_id)
 
     except Exception as exc:
         logger.warning("Projection refresh failed (non-fatal): %s", exc)
@@ -930,13 +926,15 @@ def _build_callup_alerts(
     if callups.empty:
         return []
 
-    # Enrich with player names from DB
+    # Enrich with player names from DB (include mlb_id for callup matching)
     try:
         player_names: pd.DataFrame = conn.execute(
-            f"SELECT player_id, full_name, team FROM {DIM_PLAYERS}"
+            f"SELECT player_id, mlb_id, full_name, team FROM {DIM_PLAYERS}"
         ).fetchdf()
     except duckdb.Error:
-        player_names = pd.DataFrame(columns=["player_id", "full_name", "team"])
+        player_names = pd.DataFrame(
+            columns=["player_id", "mlb_id", "full_name", "team"]
+        )
 
     # fa_df may have player_id and full_name too — use as fallback
     if (
@@ -950,20 +948,53 @@ def _build_callup_alerts(
     else:
         fa_names = pd.DataFrame(columns=["player_id", "fa_name"])
 
+    # Build mlb_id → player_id lookup from dim_players
+    mlb_to_yahoo: dict[int, str] = {}
+    if not player_names.empty and "mlb_id" in player_names.columns:
+        for _, prow in player_names.iterrows():
+            mid = prow.get("mlb_id")
+            if mid is not None and not (isinstance(mid, float) and pd.isna(mid)):
+                mlb_to_yahoo[int(mid)] = str(prow["player_id"])
+
     alerts: list[dict[str, object]] = []
     for _, row in callups.iterrows():
-        pid = str(row.get("player_id", ""))
-        name_match = player_names[player_names["player_id"] == pid]
+        # Callups use mlb_id, not player_id — map through dim_players
+        mlb_id = row.get("mlb_id")
+        pid = mlb_to_yahoo.get(int(mlb_id), "") if mlb_id is not None else ""
+        name_match = (
+            player_names[player_names["player_id"] == pid] if pid else pd.DataFrame()
+        )
         if not name_match.empty:
             name = str(name_match.iloc[0]["full_name"])
             team = str(name_match.iloc[0].get("team", ""))
-        elif not fa_names.empty:
+        elif not fa_names.empty and pid:
             fa_match = fa_names[fa_names["player_id"] == pid]
-            name = str(fa_match.iloc[0]["fa_name"]) if not fa_match.empty else pid
+            name = str(fa_match.iloc[0]["fa_name"]) if not fa_match.empty else ""
             team = ""
         else:
-            name = pid
+            name = ""
             team = ""
+
+        # Fall back to the callup record's own name/team from MLB API
+        if not name:
+            name = str(row.get("full_name", ""))
+        if not team:
+            team = str(row.get("team", ""))
+
+        # Compute days since callup from transaction_date
+        txn_date = row.get("transaction_date")
+        if txn_date is not None and hasattr(txn_date, "toordinal"):
+            days_since = (datetime.date.today() - txn_date).days
+        elif txn_date is not None:
+            try:
+                days_since = (
+                    datetime.date.today()
+                    - datetime.date.fromisoformat(str(txn_date)[:10])
+                ).days
+            except (ValueError, TypeError):
+                days_since = 0
+        else:
+            days_since = int(row.get("days_since_callup", 0))
 
         alerts.append(
             {
@@ -971,7 +1002,7 @@ def _build_callup_alerts(
                 "player_name": name,
                 "team": team,
                 "from_level": str(row.get("from_level", "AAA")),
-                "days_since_callup": int(row.get("days_since_callup", 0)),
+                "days_since_callup": days_since,
             }
         )
 

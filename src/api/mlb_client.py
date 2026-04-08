@@ -5,11 +5,10 @@ MLB data ingestion client for the fantasy baseball pipeline.
 
 Covers:
   - MLB Stats API (public, no auth): call-ups, player info, game schedule,
-    minor league stats
-  - pybaseball integration: batter/pitcher stats, Steamer projections
-  - Player ID crosswalk builder (MLBAM ↔ FanGraphs)
+    minor league stats, daily boxscore stats, pace-based projections
+  - Player ID crosswalk builder (MLBAM IDs)
 
-All pybaseball calls are wrapped to never block the pipeline — failures return
+All external API calls are wrapped to never block the pipeline — failures return
 empty DataFrames with correct columns and log a WARNING.
 
 MLB Stats API base: https://statsapi.mlb.com/api/v1/
@@ -474,22 +473,206 @@ def get_minor_league_stats(mlb_id: int, season: int) -> pd.DataFrame:
     return _empty_df(_MINOR_LEAGUE_COLUMNS)
 
 
-# ── pybaseball integration ────────────────────────────────────────────────────
+# ── MLB Stats API: Daily stats & projections ────────────────────────────────
+
+# Boxscore endpoint for individual games
+_GAME_URL = "https://statsapi.mlb.com/api/v1.1/game"
+
+
+def _fetch_boxscores_for_date(
+    date: datetime.date,
+) -> list[dict[str, Any]]:
+    """Fetch boxscores for all MLB games on a given date.
+
+    Args:
+        date: The date to fetch boxscores for.
+
+    Returns:
+        List of boxscore dicts from the MLB Stats API.
+    """
+    params: dict[str, Any] = {
+        "sportId": 1,
+        "date": date.strftime("%Y-%m-%d"),
+    }
+    try:
+        schedule_data = _mlb_get(_SCHEDULE_URL, params=params)
+    except requests.RequestException as exc:
+        logger.warning("Schedule fetch failed for %s: %s", date, exc)
+        return []
+
+    game_pks: list[int] = []
+    for date_block in schedule_data.get("dates", []):
+        for game in date_block.get("games", []):
+            status = game.get("status", {}).get("abstractGameState", "")
+            if status == "Final":
+                game_pk = game.get("gamePk")
+                if game_pk is not None:
+                    game_pks.append(int(game_pk))
+
+    boxscores: list[dict[str, Any]] = []
+    for game_pk in game_pks:
+        try:
+            url = f"{_GAME_URL}/{game_pk}/boxscore"
+            boxscore = _mlb_get(url)
+            boxscores.append(boxscore)
+        except requests.RequestException as exc:
+            logger.warning("Boxscore fetch failed for gamePk=%d: %s", game_pk, exc)
+
+    logger.info(
+        "Fetched %d boxscores for %s (%d games total).",
+        len(boxscores),
+        date,
+        len(game_pks),
+    )
+    return boxscores
+
+
+def _extract_batter_rows(
+    boxscores: list[dict[str, Any]],
+    stat_date: datetime.date,
+) -> list[dict[str, Any]]:
+    """Extract batter stat rows from boxscore data.
+
+    Args:
+        boxscores: List of boxscore dicts from MLB Stats API.
+        stat_date: Date to tag on each row.
+
+    Returns:
+        List of dicts with batter stat columns.
+    """
+    rows: list[dict[str, Any]] = []
+    for box in boxscores:
+        teams = box.get("teams", {})
+        for side in ("home", "away"):
+            team_data = teams.get(side, {})
+            players = team_data.get("players", {})
+            for _player_key, player_data in players.items():
+                stats = player_data.get("stats", {})
+                batting = stats.get("batting", {})
+                fielding = stats.get("fielding", {})
+                if not batting:
+                    continue
+
+                person = player_data.get("person", {})
+                mlb_id = person.get("id")
+                if mlb_id is None:
+                    continue
+
+                ab = batting.get("atBats", 0)
+                if ab == 0 and batting.get("plateAppearances", 0) == 0:
+                    continue  # Did not bat
+
+                h = batting.get("hits", 0)
+                hr = batting.get("homeRuns", 0)
+                doubles = batting.get("doubles", 0)
+                triples = batting.get("triples", 0)
+                singles = h - doubles - triples - hr
+                tb = singles + 2 * doubles + 3 * triples + 4 * hr
+
+                errors_val = fielding.get("errors", 0)
+                chances_val = fielding.get("chances", 0)
+
+                rows.append(
+                    {
+                        "player_id": None,
+                        "mlb_id": int(mlb_id),
+                        "stat_date": stat_date,
+                        "ab": ab,
+                        "h": h,
+                        "hr": hr,
+                        "sb": batting.get("stolenBases", 0),
+                        "bb": batting.get("baseOnBalls", 0),
+                        "hbp": batting.get("hitByPitch", 0),
+                        "sf": batting.get("sacFlies", 0),
+                        "tb": tb,
+                        "avg": None,  # Recomputed from components
+                        "ops": None,
+                        "fpct": None,
+                        "errors": errors_val,
+                        "chances": chances_val,
+                    }
+                )
+    return rows
+
+
+def _extract_pitcher_rows(
+    boxscores: list[dict[str, Any]],
+    stat_date: datetime.date,
+) -> list[dict[str, Any]]:
+    """Extract pitcher stat rows from boxscore data.
+
+    Args:
+        boxscores: List of boxscore dicts from MLB Stats API.
+        stat_date: Date to tag on each row.
+
+    Returns:
+        List of dicts with pitcher stat columns.
+    """
+    rows: list[dict[str, Any]] = []
+    for box in boxscores:
+        teams = box.get("teams", {})
+        for side in ("home", "away"):
+            team_data = teams.get(side, {})
+            players = team_data.get("players", {})
+            for _player_key, player_data in players.items():
+                stats = player_data.get("stats", {})
+                pitching = stats.get("pitching", {})
+                if not pitching:
+                    continue
+
+                person = player_data.get("person", {})
+                mlb_id = person.get("id")
+                if mlb_id is None:
+                    continue
+
+                ip_str = pitching.get("inningsPitched", "0")
+                try:
+                    ip = float(ip_str)
+                except (ValueError, TypeError):
+                    ip = 0.0
+
+                if ip == 0.0:
+                    continue  # Did not pitch
+
+                k = pitching.get("strikeOuts", 0)
+                walks_allowed = pitching.get("baseOnBalls", 0)
+                hits_allowed = pitching.get("hits", 0)
+                sv = pitching.get("saves", 0)
+                holds = pitching.get("holds", 0)
+
+                whip = (walks_allowed + hits_allowed) / ip if ip > 0 else None
+                k_bb = k / walks_allowed if walks_allowed > 0 else None
+
+                rows.append(
+                    {
+                        "mlb_id": int(mlb_id),
+                        "stat_date": stat_date,
+                        "ip": ip,
+                        "w": pitching.get("wins", 0),
+                        "k": k,
+                        "walks_allowed": walks_allowed,
+                        "hits_allowed": hits_allowed,
+                        "sv": sv,
+                        "holds": holds,
+                        "whip": whip,
+                        "k_bb": k_bb,
+                        "sv_h": sv + holds,
+                    }
+                )
+    return rows
 
 
 def get_batter_stats(
     start_date: datetime.date,
     end_date: datetime.date,
 ) -> pd.DataFrame:
-    """Fetch batter stats via pybaseball.
+    """Fetch batter stats from MLB Stats API boxscores.
 
-    Source: pybaseball.batting_stats() for season-level.
-    Normalize to fact_player_stats_daily columns.
-    Cache results: raise a warning and return empty DataFrame if pybaseball fails
-    (never block the pipeline on a pybaseball failure).
+    Source: MLB Stats API /game/{gamePk}/boxscore for all completed games
+    on the given date.
 
     Args:
-        start_date: Start of the date range (used to derive the season year).
+        start_date: Start of the date range (used with end_date).
         end_date: End of the date range.
 
     Returns:
@@ -498,85 +681,30 @@ def get_batter_stats(
             mlb_id, stat_date, ab, h, hr, sb, bb, hbp, sf, tb,
             avg, ops, fpct, errors, chances
     """
-    import pybaseball  # noqa: PLC0415
-
-    season = start_date.year
-    stat_date = end_date  # Season-level stats tagged to the end_date
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            raw = pybaseball.batting_stats(season)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "pybaseball.batting_stats() failed: %s. Returning empty DataFrame.", exc
-        )
+    boxscores = _fetch_boxscores_for_date(end_date)
+    if not boxscores:
         return _empty_df(_BATTER_STATS_COLUMNS)
 
-    if raw is None or raw.empty:
-        logger.warning(
-            "pybaseball.batting_stats() returned no data for season %d.", season
-        )
+    rows = _extract_batter_rows(boxscores, end_date)
+    if not rows:
         return _empty_df(_BATTER_STATS_COLUMNS)
 
-    # Build crosswalk: pybaseball batting_stats includes an 'IDfg' column (FanGraphs ID)
-    # but not directly an mlb_id. We normalise what we can and leave mlb_id resolution
-    # to the crosswalk step.
-    col_map = {
-        "IDfg": "fg_id",
-        "AB": "ab",
-        "H": "h",
-        "HR": "hr",
-        "SB": "sb",
-        "BB": "bb",
-        "HBP": "hbp",
-        "SF": "sf",
-        "AVG": "avg",
-        "OPS": "ops",
-    }
-    existing_cols = {k: v for k, v in col_map.items() if k in raw.columns}
-    df = raw.rename(columns=existing_cols).copy()
-
-    # Add missing columns with None
-    for col in _BATTER_STATS_COLUMNS:
-        if col not in df.columns:
-            df[col] = None
-
-    df["player_id"] = None
-    df["mlb_id"] = None  # caller resolves via crosswalk
-    df["stat_date"] = stat_date
-
-    # Compute total bases if not present (requires 1B, 2B, 3B, HR — approximate from hits)
-    if "tb" not in raw.columns or df["tb"].isna().all():
-        tb_cols_present = all(c in raw.columns for c in ["H", "2B", "3B", "HR"])
-        if tb_cols_present:
-            singles = raw["H"] - raw.get("2B", 0) - raw.get("3B", 0) - raw["HR"]
-            df["tb"] = (
-                singles + 2 * raw.get("2B", 0) + 3 * raw.get("3B", 0) + 4 * raw["HR"]
-            )
-
-    # fpct, errors, chances: not available from batting_stats — leave as None
-    df["fpct"] = None
-    df["errors"] = None
-    df["chances"] = None
-
-    result: pd.DataFrame = df[_BATTER_STATS_COLUMNS].copy()
-    logger.info("Loaded %d batter stat rows for season %d.", len(result), season)
-    return result
+    df = pd.DataFrame(rows, columns=_BATTER_STATS_COLUMNS)
+    logger.info("Loaded %d batter stat rows for %s.", len(df), end_date)
+    return df
 
 
 def get_pitcher_stats(
     start_date: datetime.date,
     end_date: datetime.date,
 ) -> pd.DataFrame:
-    """Fetch pitcher stats via pybaseball.
+    """Fetch pitcher stats from MLB Stats API boxscores.
 
-    Source: pybaseball.pitching_stats() for season-level.
-    Normalize to fact_player_stats_daily columns.
-    Never block on failure — return empty DataFrame with correct columns.
+    Source: MLB Stats API /game/{gamePk}/boxscore for all completed games
+    on the given date.
 
     Args:
-        start_date: Start of the date range (used to derive the season year).
+        start_date: Start of the date range (used with end_date).
         end_date: End of the date range.
 
     Returns:
@@ -584,72 +712,153 @@ def get_pitcher_stats(
             mlb_id, stat_date, ip, w, k, walks_allowed, hits_allowed, sv, holds,
             whip (LOWEST WINS), k_bb, sv_h
     """
-    import pybaseball  # noqa: PLC0415
-
-    season = start_date.year
-    stat_date = end_date
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            raw = pybaseball.pitching_stats(season)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "pybaseball.pitching_stats() failed: %s. Returning empty DataFrame.", exc
-        )
+    boxscores = _fetch_boxscores_for_date(end_date)
+    if not boxscores:
         return _empty_df(_PITCHER_STATS_COLUMNS)
 
-    if raw is None or raw.empty:
-        logger.warning(
-            "pybaseball.pitching_stats() returned no data for season %d.", season
-        )
+    rows = _extract_pitcher_rows(boxscores, end_date)
+    if not rows:
         return _empty_df(_PITCHER_STATS_COLUMNS)
 
-    col_map = {
-        "IP": "ip",
-        "W": "w",
-        "SO": "k",
-        "BB": "walks_allowed",
-        "H": "hits_allowed",
-        "SV": "sv",
-        "HLD": "holds",
-        "WHIP": "whip",  # LOWEST WINS
-    }
-    existing_cols = {k: v for k, v in col_map.items() if k in raw.columns}
-    df = raw.rename(columns=existing_cols).copy()
+    df = pd.DataFrame(rows, columns=_PITCHER_STATS_COLUMNS)
+    logger.info("Loaded %d pitcher stat rows for %s.", len(df), end_date)
+    return df
 
-    df["mlb_id"] = None  # caller resolves via crosswalk
-    df["stat_date"] = stat_date
 
-    # Compute k_bb = k / walks_allowed (handle division by zero → None)
-    if "k" in df.columns and "walks_allowed" in df.columns:
-        denom = pd.to_numeric(df["walks_allowed"], errors="coerce")
-        num = pd.to_numeric(df["k"], errors="coerce")
-        df["k_bb"] = num.where(denom > 0).div(denom.where(denom > 0))
-    else:
-        df["k_bb"] = None
+def get_season_stats_for_projections(
+    mlb_ids: list[int],
+    season: int,
+) -> pd.DataFrame:
+    """Fetch season-to-date stats from MLB Stats API for pace-based projections.
 
-    # sv_h = sv + holds
-    sv_col = pd.to_numeric(df.get("sv", 0), errors="coerce").fillna(0)
-    holds_col = pd.to_numeric(df.get("holds", 0), errors="coerce").fillna(0)
-    df["sv_h"] = (sv_col + holds_col).astype(int)
+    Source: GET /people/{mlb_id}/stats?stats=season&group=hitting,pitching&season=YYYY
 
-    for col in _PITCHER_STATS_COLUMNS:
+    Args:
+        mlb_ids: List of MLBAM player IDs to fetch.
+        season: MLB season year.
+
+    Returns:
+        DataFrame with projection columns derived from season pace.
+    """
+    rows: list[dict[str, Any]] = []
+
+    for mlb_id in mlb_ids:
+        url = f"{_PEOPLE_URL}/{mlb_id}/stats"
+        params: dict[str, Any] = {
+            "stats": "season",
+            "group": "hitting,pitching",
+            "sportId": 1,
+            "season": season,
+        }
+
+        try:
+            data = _mlb_get(url, params=params)
+        except requests.RequestException as exc:
+            logger.debug("Season stats failed for mlb_id=%d: %s", mlb_id, exc)
+            continue
+
+        for group in data.get("stats", []):
+            splits = group.get("splits", [])
+            if not splits:
+                continue
+            stat = splits[0].get("stat", {})
+            games = stat.get("gamesPlayed", 0)
+            if games == 0:
+                continue
+
+            row: dict[str, Any] = {
+                "mlb_id": mlb_id,
+                "fg_id": None,
+                "games_played": games,
+                "source": "mlb_pace",
+            }
+
+            # Batting stats
+            ab = stat.get("atBats")
+            if ab is not None and ab > 0:
+                row.update(
+                    {
+                        "proj_ab": ab,
+                        "proj_h": stat.get("hits", 0),
+                        "proj_hr": stat.get("homeRuns", 0),
+                        "proj_sb": stat.get("stolenBases", 0),
+                        "proj_bb": stat.get("baseOnBalls", 0),
+                        "proj_tb": stat.get("totalBases", 0),
+                        "proj_avg": stat.get("avg"),
+                        "proj_ops": stat.get("ops"),
+                        "proj_fpct": stat.get("fielding"),
+                    }
+                )
+
+            # Pitching stats
+            ip_str = stat.get("inningsPitched")
+            if ip_str is not None:
+                try:
+                    ip = float(ip_str)
+                except (ValueError, TypeError):
+                    ip = 0.0
+                if ip > 0:
+                    k = stat.get("strikeOuts", 0)
+                    bb = stat.get("baseOnBalls", 0)
+                    h_allowed = stat.get("hits", 0)
+                    sv = stat.get("saves", 0)
+                    hld = stat.get("holds", 0)
+                    row.update(
+                        {
+                            "proj_ip": ip,
+                            "proj_w": stat.get("wins", 0),
+                            "proj_k": k,
+                            "proj_walks_allowed": bb,
+                            "proj_hits_allowed": h_allowed,
+                            "proj_sv_h": sv + hld,
+                            "proj_whip": stat.get("whip"),
+                            "proj_k_bb": k / bb if bb > 0 else None,
+                        }
+                    )
+
+            rows.append(row)
+
+    if not rows:
+        return _empty_df(_PROJECTIONS_COLUMNS)
+
+    df = pd.DataFrame(rows)
+
+    # Scale season stats to per-game rates, then caller multiplies by games_remaining
+    for col in df.columns:
+        if col.startswith("proj_") and col not in (
+            "proj_avg",
+            "proj_ops",
+            "proj_fpct",
+            "proj_whip",
+            "proj_k_bb",
+        ):
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            games = df["games_played"].clip(lower=1)
+            df[col] = df[col] / games  # Per-game rate
+
+    df["games_remaining"] = None  # Caller fills in from schedule
+    df["source"] = "mlb_pace"
+
+    # Ensure all projection columns exist
+    for col in _PROJECTIONS_COLUMNS:
         if col not in df.columns:
             df[col] = None
 
-    result: pd.DataFrame = df[_PITCHER_STATS_COLUMNS].copy()
-    logger.info("Loaded %d pitcher stat rows for season %d.", len(result), season)
+    result = df[_PROJECTIONS_COLUMNS].copy()
+    logger.info(
+        "Built %d pace-based projection rows for season %d.", len(result), season
+    )
     return result
 
 
 def get_steamer_projections(season: int) -> pd.DataFrame:
-    """Fetch Steamer projections via pybaseball.
+    """Fetch projections using MLB Stats API season stats as a pace-based proxy.
 
-    Primary: pybaseball.fg_batting_projections() + pybaseball.fg_pitching_projections()
-    Fallback: return empty DataFrame with correct columns and log a WARNING.
-    NEVER raise — always return a valid (possibly empty) DataFrame.
-    Set source='steamer' on success, source='unavailable' on fallback.
+    Uses season-to-date stats from the MLB Stats API and converts them to
+    per-game rates. The pipeline multiplies these rates by games_remaining
+    in the current week to produce projected totals.
+
+    NEVER raises — always returns a valid (possibly empty) DataFrame.
 
     Note: WHIP is lowest-wins — lower projected WHIP is better.
 
@@ -663,121 +872,15 @@ def get_steamer_projections(season: int) -> pd.DataFrame:
             proj_avg, proj_ops, proj_fpct, proj_whip (LOWEST WINS), proj_k_bb,
             games_remaining, source
     """
-    import pybaseball  # noqa: PLC0415
-
-    rows: list[pd.DataFrame] = []
-
-    # --- Batting projections ---
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            bat_raw = pybaseball.fg_batting_projections(season)
-
-        if bat_raw is not None and not bat_raw.empty:
-            bat_col_map = {
-                "playerid": "fg_id",
-                "H": "proj_h",
-                "HR": "proj_hr",
-                "SB": "proj_sb",
-                "BB": "proj_bb",
-                "AB": "proj_ab",
-                "AVG": "proj_avg",
-                "OPS": "proj_ops",
-            }
-            existing = {k: v for k, v in bat_col_map.items() if k in bat_raw.columns}
-            bat_df = bat_raw.rename(columns=existing).copy()
-            bat_df["source"] = "steamer"
-            bat_df["mlb_id"] = None  # resolved via crosswalk
-            # Estimated total bases from AB and OPS components (best effort)
-            bat_df["proj_tb"] = None
-            bat_df["proj_fpct"] = None
-            bat_df["proj_ip"] = None
-            bat_df["proj_w"] = None
-            bat_df["proj_k"] = None
-            bat_df["proj_walks_allowed"] = None
-            bat_df["proj_hits_allowed"] = None
-            bat_df["proj_sv_h"] = None
-            bat_df["proj_whip"] = None  # LOWEST WINS — not applicable to batters
-            bat_df["proj_k_bb"] = None
-            bat_df["games_remaining"] = None
-            rows.append(bat_df)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "pybaseball.fg_batting_projections() failed: %s. Continuing to pitching.",
-            exc,
-        )
-
-    # --- Pitching projections ---
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            pit_raw = pybaseball.fg_pitching_projections(season)
-
-        if pit_raw is not None and not pit_raw.empty:
-            pit_col_map = {
-                "playerid": "fg_id",
-                "IP": "proj_ip",
-                "W": "proj_w",
-                "SO": "proj_k",
-                "BB": "proj_walks_allowed",
-                "H": "proj_hits_allowed",
-                "SV": "proj_sv",
-                "HLD": "proj_hld",
-                "WHIP": "proj_whip",  # LOWEST WINS
-            }
-            existing = {k: v for k, v in pit_col_map.items() if k in pit_raw.columns}
-            pit_df = pit_raw.rename(columns=existing).copy()
-            pit_df["source"] = "steamer"
-            pit_df["mlb_id"] = None
-
-            # sv_h = sv + holds
-            sv_col = pd.to_numeric(pit_df.get("proj_sv", 0), errors="coerce").fillna(0)
-            hld_col = pd.to_numeric(pit_df.get("proj_hld", 0), errors="coerce").fillna(
-                0
-            )
-            pit_df["proj_sv_h"] = (sv_col + hld_col).astype(int)
-
-            # k_bb
-            if "proj_k" in pit_df.columns and "proj_walks_allowed" in pit_df.columns:
-                denom = pd.to_numeric(pit_df["proj_walks_allowed"], errors="coerce")
-                num = pd.to_numeric(pit_df["proj_k"], errors="coerce")
-                pit_df["proj_k_bb"] = num.where(denom > 0).div(denom.where(denom > 0))
-            else:
-                pit_df["proj_k_bb"] = None
-
-            pit_df["proj_h"] = None
-            pit_df["proj_hr"] = None
-            pit_df["proj_sb"] = None
-            pit_df["proj_bb"] = None
-            pit_df["proj_ab"] = None
-            pit_df["proj_tb"] = None
-            pit_df["proj_avg"] = None
-            pit_df["proj_ops"] = None
-            pit_df["proj_fpct"] = None
-            pit_df["games_remaining"] = None
-            rows.append(pit_df)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "pybaseball.fg_pitching_projections() failed: %s. Continuing.", exc
-        )
-
-    if not rows:
-        logger.warning(
-            "All Steamer projection sources failed for season %d. "
-            "Returning empty DataFrame with source='unavailable'.",
-            season,
-        )
-        df = _empty_df(_PROJECTIONS_COLUMNS)
-        return df
-
-    combined = pd.concat(rows, ignore_index=True)
-    for col in _PROJECTIONS_COLUMNS:
-        if col not in combined.columns:
-            combined[col] = None
-
-    result = combined[_PROJECTIONS_COLUMNS].copy()
-    logger.info("Loaded %d Steamer projection rows for season %d.", len(result), season)
-    return result
+    # This function needs mlb_ids to query. When called from the pipeline,
+    # dim_players should already be populated. We return empty here and let
+    # the pipeline's _step_refresh_projections handle the crosswalk.
+    # The actual projection data is fetched via get_season_stats_for_projections().
+    logger.info(
+        "get_steamer_projections called — projections now use MLB Stats API pace. "
+        "Returning empty; use get_season_stats_for_projections() with mlb_ids."
+    )
+    return _empty_df(_PROJECTIONS_COLUMNS)
 
 
 # ── Player ID crosswalk ───────────────────────────────────────────────────────

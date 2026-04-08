@@ -3,8 +3,7 @@ tests/api/test_mlb_client.py
 
 Unit tests for src/api/mlb_client.py.
 
-ALL external calls (HTTP + pybaseball) are mocked — no real network or
-pybaseball calls are made in any test.
+ALL external calls (HTTP) are mocked — no real network calls are made in any test.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from src.api.mlb_client import (
     get_pitcher_stats,
     get_player_info,
     get_recent_callups,
+    get_season_stats_for_projections,
     get_steamer_projections,
 )
 
@@ -422,21 +422,105 @@ class TestGetMinorLeagueStats:
         assert df.iloc[0]["mlb_id"] == 12345
 
 
+# ── Sample boxscore data for batter/pitcher stat tests ───────────────────────
+
+_SAMPLE_BOXSCORE: dict[str, Any] = {
+    "teams": {
+        "home": {
+            "players": {
+                "ID660271": {
+                    "person": {"id": 660271},
+                    "stats": {
+                        "batting": {
+                            "atBats": 4,
+                            "hits": 2,
+                            "homeRuns": 1,
+                            "doubles": 0,
+                            "triples": 0,
+                            "stolenBases": 1,
+                            "baseOnBalls": 1,
+                            "hitByPitch": 0,
+                            "sacFlies": 0,
+                            "plateAppearances": 5,
+                        },
+                        "fielding": {"errors": 0, "chances": 3},
+                    },
+                },
+                "ID543000": {
+                    "person": {"id": 543000},
+                    "stats": {
+                        "pitching": {
+                            "inningsPitched": "7.0",
+                            "wins": 1,
+                            "strikeOuts": 8,
+                            "baseOnBalls": 2,
+                            "hits": 5,
+                            "saves": 0,
+                            "holds": 0,
+                        },
+                    },
+                },
+            },
+        },
+        "away": {
+            "players": {
+                "ID665742": {
+                    "person": {"id": 665742},
+                    "stats": {
+                        "pitching": {
+                            "inningsPitched": "1.0",
+                            "wins": 0,
+                            "strikeOuts": 2,
+                            "baseOnBalls": 0,
+                            "hits": 1,
+                            "saves": 1,
+                            "holds": 0,
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+_SAMPLE_SCHEDULE_FOR_BOXSCORE: dict[str, Any] = {
+    "dates": [
+        {
+            "games": [
+                {
+                    "gamePk": 746001,
+                    "status": {"abstractGameState": "Final"},
+                    "teams": {
+                        "home": {"team": {"id": 147}},
+                        "away": {"team": {"id": 111}},
+                    },
+                }
+            ]
+        }
+    ]
+}
+
+
+def _mock_requests_for_boxscore(
+    url: str, params: dict[str, Any] | None = None, timeout: int = 30
+) -> MagicMock:
+    """Mock requests.get for schedule + boxscore calls."""
+    if "schedule" in url:
+        return _make_response(_SAMPLE_SCHEDULE_FOR_BOXSCORE)
+    if "boxscore" in url:
+        return _make_response(_SAMPLE_BOXSCORE)
+    return _make_response({})
+
+
 # ── get_batter_stats tests ────────────────────────────────────────────────────
 
 
 class TestGetBatterStats:
-    def test_returns_empty_df_when_pybaseball_fails(self) -> None:
-        """Returns empty DataFrame with correct columns when pybaseball fails."""
-        import sys
-        import types
-
-        broken = types.ModuleType("pybaseball")
-        broken.batting_stats = MagicMock(side_effect=Exception("Connection error"))  # type: ignore[attr-defined]
-        with patch.dict(sys.modules, {"pybaseball": broken}):
+    def test_returns_empty_df_when_no_games(self) -> None:
+        """Returns empty DataFrame with correct columns when no games found."""
+        with patch("requests.get", return_value=_make_response({"dates": []})):
             df = get_batter_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
 
-        # Should return empty with correct columns
         assert list(df.columns) == [
             "player_id",
             "mlb_id",
@@ -458,29 +542,9 @@ class TestGetBatterStats:
         assert df.empty
 
     def test_returns_correct_columns_on_success(self) -> None:
-        """Returns DataFrame with fact_player_stats_daily batter columns on success."""
-        mock_df = pd.DataFrame(
-            {
-                "IDfg": [12345],
-                "AB": [400],
-                "H": [120],
-                "HR": [20],
-                "SB": [10],
-                "BB": [50],
-                "HBP": [5],
-                "SF": [3],
-                "AVG": [0.300],
-                "OPS": [0.850],
-            }
-        )
-
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.batting_stats.return_value = mock_df
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_batter_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
+        """Returns DataFrame with fact_player_stats_daily batter columns."""
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         expected_cols = [
             "player_id",
@@ -504,56 +568,37 @@ class TestGetBatterStats:
 
     def test_stat_date_set_to_end_date(self) -> None:
         """stat_date column is set to end_date."""
-        mock_df = pd.DataFrame(
-            {
-                "IDfg": [12345],
-                "AB": [400],
-                "H": [120],
-                "HR": [20],
-                "SB": [10],
-                "BB": [50],
-                "HBP": [5],
-                "SF": [3],
-                "AVG": [0.300],
-                "OPS": [0.850],
-            }
-        )
-
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.batting_stats.return_value = mock_df
-
         end_date = datetime.date(2026, 4, 7)
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_batter_stats(datetime.date(2026, 4, 1), end_date)
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_batter_stats(datetime.date(2026, 4, 7), end_date)
 
+        assert not df.empty
         assert all(df["stat_date"] == end_date)
 
+    def test_mlb_id_set_from_boxscore(self) -> None:
+        """mlb_id is set from boxscore player data."""
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
-def _patched_import_batting_fail(name: str, *args: Any, **kwargs: Any) -> Any:
-    """Simulate pybaseball import that raises on batting_stats call."""
-    if name == "pybaseball":
-        mock = MagicMock()
-        mock.batting_stats.side_effect = Exception("pybaseball failure")
-        return mock
-    import builtins
+        assert 660271 in df["mlb_id"].values
 
-    return builtins.__import__(name, *args, **kwargs)
+    def test_total_bases_computed(self) -> None:
+        """TB = singles + 2*doubles + 3*triples + 4*HR."""
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
+
+        row = df[df["mlb_id"] == 660271].iloc[0]
+        # 2 hits, 1 HR, 0 doubles, 0 triples → 1 single + 4*1 HR = 5 TB
+        assert row["tb"] == 5
 
 
 # ── get_pitcher_stats tests ───────────────────────────────────────────────────
 
 
 class TestGetPitcherStats:
-    def test_returns_empty_df_when_pybaseball_fails(self) -> None:
-        """Returns empty DataFrame with correct columns when pybaseball fails."""
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.pitching_stats.side_effect = Exception("Network error")
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
+    def test_returns_empty_df_when_no_games(self) -> None:
+        """Returns empty DataFrame with correct columns when no games found."""
+        with patch("requests.get", return_value=_make_response({"dates": []})):
             df = get_pitcher_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
 
         assert df.empty
@@ -574,27 +619,9 @@ class TestGetPitcherStats:
         assert list(df.columns) == expected_cols
 
     def test_returns_correct_columns_on_success(self) -> None:
-        """Returns DataFrame with pitcher stat columns on success."""
-        mock_df = pd.DataFrame(
-            {
-                "IP": [180.0],
-                "W": [15],
-                "SO": [200],
-                "BB": [50],
-                "H": [160],
-                "SV": [0],
-                "HLD": [0],
-                "WHIP": [1.17],
-            }
-        )
-
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.pitching_stats.return_value = mock_df
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_pitcher_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
+        """Returns DataFrame with pitcher stat columns."""
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         expected_cols = [
             "mlb_id",
@@ -614,75 +641,39 @@ class TestGetPitcherStats:
 
     def test_k_bb_computed(self) -> None:
         """k_bb is computed from k/walks_allowed."""
-        mock_df = pd.DataFrame(
-            {
-                "IP": [100.0],
-                "W": [8],
-                "SO": [100],
-                "BB": [25],
-                "H": [90],
-                "SV": [0],
-                "HLD": [5],
-                "WHIP": [1.15],
-            }
-        )
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.pitching_stats.return_value = mock_df
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_pitcher_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
-
-        assert pytest.approx(df.iloc[0]["k_bb"], rel=1e-3) == 4.0
+        sp_row = df[df["mlb_id"] == 543000].iloc[0]
+        # 8 K / 2 BB = 4.0
+        assert pytest.approx(sp_row["k_bb"], rel=1e-3) == 4.0
 
     def test_sv_h_computed(self) -> None:
         """sv_h = sv + holds."""
-        mock_df = pd.DataFrame(
-            {
-                "IP": [60.0],
-                "W": [4],
-                "SO": [70],
-                "BB": [20],
-                "H": [55],
-                "SV": [10],
-                "HLD": [15],
-                "WHIP": [1.25],
-            }
-        )
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
-        import sys
+        closer_row = df[df["mlb_id"] == 665742].iloc[0]
+        assert closer_row["sv_h"] == 1  # 1 save + 0 holds
 
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.pitching_stats.return_value = mock_df
+    def test_whip_computed(self) -> None:
+        """WHIP = (walks_allowed + hits_allowed) / IP."""
+        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+            df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_pitcher_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
-
-        assert df.iloc[0]["sv_h"] == 25
+        sp_row = df[df["mlb_id"] == 543000].iloc[0]
+        # (2 + 5) / 7.0 = 1.0
+        assert pytest.approx(sp_row["whip"], rel=1e-3) == 1.0
 
 
 # ── get_steamer_projections tests ─────────────────────────────────────────────
 
 
 class TestGetSteamerProjections:
-    def test_returns_source_unavailable_on_total_failure(self) -> None:
-        """Returns empty DataFrame (not raises) with source='unavailable' column on failure."""
-        import sys
+    def test_returns_empty_df_with_correct_columns(self) -> None:
+        """Returns empty DataFrame with correct columns (now a stub)."""
+        df = get_steamer_projections(2026)
 
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.fg_batting_projections.side_effect = Exception(
-            "FanGraphs blocked"
-        )
-        mock_pybaseball.fg_pitching_projections.side_effect = Exception(
-            "FanGraphs blocked"
-        )
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_steamer_projections(2026)
-
-        # Should not raise; returns empty DataFrame
         assert df.empty
         expected_cols = [
             "mlb_id",
@@ -709,72 +700,79 @@ class TestGetSteamerProjections:
         ]
         assert list(df.columns) == expected_cols
 
-    def test_does_not_raise_on_failure(self) -> None:
+    def test_does_not_raise(self) -> None:
         """Never raises — always returns a valid DataFrame."""
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.fg_batting_projections.side_effect = RuntimeError("Boom")
-        mock_pybaseball.fg_pitching_projections.side_effect = RuntimeError("Boom")
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            try:
-                df = get_steamer_projections(2026)
-            except Exception as exc:
-                pytest.fail(f"get_steamer_projections raised unexpectedly: {exc}")
+        try:
+            df = get_steamer_projections(2026)
+        except Exception as exc:
+            pytest.fail(f"get_steamer_projections raised unexpectedly: {exc}")
 
         assert isinstance(df, pd.DataFrame)
 
-    def test_returns_steamer_source_on_success(self) -> None:
-        """Returns source='steamer' rows on successful pull."""
-        bat_df = pd.DataFrame(
-            {
-                "playerid": ["fg123"],
-                "H": [150.0],
-                "HR": [25.0],
-                "SB": [10.0],
-                "BB": [55.0],
-                "AB": [500.0],
-                "AVG": [0.300],
-                "OPS": [0.860],
-            }
-        )
 
-        import sys
+# ── get_season_stats_for_projections tests ────────────────────────────────────
 
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.fg_batting_projections.return_value = bat_df
-        mock_pybaseball.fg_pitching_projections.side_effect = Exception("No pitching")
 
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_steamer_projections(2026)
+class TestGetSeasonStatsForProjections:
+    def _season_hitting_response(self) -> dict[str, Any]:
+        return {
+            "stats": [
+                {
+                    "splits": [
+                        {
+                            "stat": {
+                                "gamesPlayed": 20,
+                                "atBats": 80,
+                                "hits": 24,
+                                "homeRuns": 5,
+                                "stolenBases": 3,
+                                "baseOnBalls": 10,
+                                "totalBases": 45,
+                                "avg": ".300",
+                                "ops": ".900",
+                                "fielding": ".980",
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
 
-        assert not df.empty
-        assert (df["source"] == "steamer").all()
+    def _season_pitching_response(self) -> dict[str, Any]:
+        return {
+            "stats": [
+                {
+                    "splits": [
+                        {
+                            "stat": {
+                                "gamesPlayed": 5,
+                                "inningsPitched": "30.0",
+                                "wins": 3,
+                                "strikeOuts": 35,
+                                "baseOnBalls": 8,
+                                "hits": 25,
+                                "saves": 0,
+                                "holds": 0,
+                                "whip": "1.10",
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
 
-    def test_correct_columns_returned(self) -> None:
-        """Returns DataFrame with all fact_projections columns."""
-        bat_df = pd.DataFrame(
-            {
-                "playerid": ["fg001", "fg002"],
-                "H": [120.0, 80.0],
-                "HR": [15.0, 5.0],
-                "SB": [8.0, 20.0],
-                "BB": [40.0, 30.0],
-                "AB": [450.0, 350.0],
-                "AVG": [0.267, 0.229],
-                "OPS": [0.780, 0.690],
-            }
-        )
+    def test_returns_empty_when_no_players(self) -> None:
+        """Returns empty DataFrame when mlb_ids list is empty."""
+        df = get_season_stats_for_projections([], 2026)
+        assert df.empty
 
-        import sys
-
-        mock_pybaseball = MagicMock()
-        mock_pybaseball.fg_batting_projections.return_value = bat_df
-        mock_pybaseball.fg_pitching_projections.return_value = pd.DataFrame()
-
-        with patch.dict(sys.modules, {"pybaseball": mock_pybaseball}):
-            df = get_steamer_projections(2026)
+    def test_returns_correct_columns(self) -> None:
+        """Returns DataFrame with all projection columns."""
+        with patch(
+            "requests.get",
+            return_value=_make_response(self._season_hitting_response()),
+        ):
+            df = get_season_stats_for_projections([660271], 2026)
 
         expected_cols = [
             "mlb_id",
@@ -800,6 +798,39 @@ class TestGetSteamerProjections:
             "source",
         ]
         assert list(df.columns) == expected_cols
+
+    def test_source_is_mlb_pace(self) -> None:
+        """Source column is 'mlb_pace'."""
+        with patch(
+            "requests.get",
+            return_value=_make_response(self._season_hitting_response()),
+        ):
+            df = get_season_stats_for_projections([660271], 2026)
+
+        assert not df.empty
+        assert (df["source"] == "mlb_pace").all()
+
+    def test_stats_scaled_to_per_game(self) -> None:
+        """Counting stats are divided by games_played to give per-game rates."""
+        with patch(
+            "requests.get",
+            return_value=_make_response(self._season_hitting_response()),
+        ):
+            df = get_season_stats_for_projections([660271], 2026)
+
+        row = df.iloc[0]
+        # 24 hits in 20 games = 1.2 per game
+        assert pytest.approx(float(row["proj_h"]), rel=1e-2) == 1.2
+
+    def test_handles_api_failure_gracefully(self) -> None:
+        """Returns empty DataFrame when API fails."""
+        with patch(
+            "requests.get",
+            side_effect=requests.RequestException("timeout"),
+        ):
+            df = get_season_stats_for_projections([660271], 2026)
+
+        assert df.empty
 
 
 # ── build_player_id_crosswalk tests ──────────────────────────────────────────

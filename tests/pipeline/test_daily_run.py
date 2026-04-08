@@ -565,7 +565,6 @@ def test_run_daily_pipeline_returns_run_id(conn, settings, today, monkeypatch):
     """Pipeline completes (possibly with partial failures) and returns a run_id."""
     import unittest.mock as mock
 
-    # Mock all external calls
     empty_df = pd.DataFrame()
 
     with (
@@ -584,7 +583,7 @@ def test_run_daily_pipeline_returns_run_id(conn, settings, today, monkeypatch):
             return_value=empty_df,
         ),
         mock.patch(
-            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            "src.pipeline.daily_run.mlb_client.get_season_stats_for_projections",
             return_value=empty_df,
         ),
         mock.patch(
@@ -620,7 +619,7 @@ def test_run_daily_pipeline_logs_run(conn, settings, today, monkeypatch):
             return_value=empty_df,
         ),
         mock.patch(
-            "src.pipeline.daily_run.mlb_client.get_steamer_projections",
+            "src.pipeline.daily_run.mlb_client.get_season_stats_for_projections",
             return_value=empty_df,
         ),
         mock.patch(
@@ -635,6 +634,82 @@ def test_run_daily_pipeline_logs_run(conn, settings, today, monkeypatch):
         f"SELECT status FROM {FACT_PIPELINE_RUNS} WHERE run_id = ?", [run_id]
     ).fetchone()
     assert row is not None
+
+
+def test_pipeline_does_not_crash_with_callup_data_and_empty_roster(
+    conn, settings, today
+):
+    """Regression: pipeline must not KeyError when callups exist but roster is empty."""
+    import datetime
+    import unittest.mock as mock
+
+    # Add existing players to dim_players (simulating previous runs)
+    players = pd.DataFrame(
+        [
+            {
+                "player_id": "423.p.1234",
+                "mlb_id": 12345,
+                "fg_id": None,
+                "full_name": "Test Player",
+                "team": "NYY",
+                "positions": ["SS"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": "2026-04-07T00:00:00",
+            },
+        ]
+    )
+    conn.register("_tmp", players)
+    conn.execute("INSERT INTO dim_players SELECT * FROM _tmp")
+    conn.unregister("_tmp")
+
+    callups_df = pd.DataFrame(
+        [
+            {
+                "mlb_id": 99999,
+                "full_name": "New Callup",
+                "team": "BOS",
+                "transaction_date": datetime.date(2026, 4, 6),
+                "from_level": "AAA",
+            },
+        ]
+    )
+
+    empty_df = pd.DataFrame()
+    with (
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env",
+            side_effect=Exception("Auth error 401"),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_batter_stats",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_pitcher_stats",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_daily_game_schedule",
+            return_value=pd.DataFrame({"mlb_id": [147, 111]}),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_season_stats_for_projections",
+            return_value=empty_df,
+        ),
+        mock.patch(
+            "src.pipeline.daily_run.mlb_client.get_recent_callups",
+            return_value=callups_df,
+        ),
+    ):
+        result = run_daily_pipeline(conn, settings, run_date=today)
+
+    # Must not crash — status should be partial (Yahoo failed but analysis completed)
+    assert result["status"] == "partial"
+    assert "analysis" not in " ".join(
+        e for e in result.get("errors", []) if isinstance(e, str)
+    )
 
 
 # ── __main__ exit code logic ──────────────────────────────────────────────────
