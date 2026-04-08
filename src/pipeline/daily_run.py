@@ -56,6 +56,7 @@ from src.db.loaders_mlb import (
     update_player_crosswalk,
 )
 from src.db.loaders_yahoo import (
+    load_matchups,
     load_players,
     load_rosters,
     load_transactions,
@@ -173,6 +174,13 @@ def _step_load_yahoo(
     # Transactions (last 7 days)
     txn_df = yahoo.get_transactions(days=7)
     row_counts[FACT_TRANSACTIONS] = load_transactions(conn, txn_df)
+
+    # Matchup data (for opponent comparison)
+    try:
+        matchup_df = yahoo.get_current_matchup()
+        row_counts[FACT_MATCHUPS] = load_matchups(conn, matchup_df)
+    except Exception as exc:
+        logger.warning("Matchup fetch failed (non-fatal): %s", exc)
 
     # Player details for rostered players
     player_ids: list[str] = (
