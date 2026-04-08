@@ -1,7 +1,7 @@
 league:
   id: 87941
   name: "The Vlad Guerrero Invitational"
-  my_team_key: "423.l.87941.t.10"  # 2026 season; verify after draft
+  my_team_key: "469.l.87941.t.10"  # 2026 season (game key 469)
   platform: "Yahoo Sports Fantasy Baseball"
   url: "https://baseball.fantasysports.yahoo.com/league/hockeytwitsbaseballfantasy"
   max_teams: 10

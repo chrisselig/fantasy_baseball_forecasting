@@ -129,8 +129,9 @@ def _my_team_key(settings: LeagueSettings) -> str:
     """
     if settings.my_team_key:
         return settings.my_team_key
+    game_key = os.environ.get("YAHOO_GAME_KEY", "469")
     team_id = os.environ.get("YAHOO_TEAM_ID", "1")
-    return f"422.l.{settings.league_id}.t.{team_id}"
+    return f"{game_key}.l.{settings.league_id}.t.{team_id}"
 
 
 # ── Step functions ─────────────────────────────────────────────────────────────
