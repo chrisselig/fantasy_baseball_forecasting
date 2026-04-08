@@ -109,7 +109,7 @@ def test_my_team_key_from_env_var(settings, monkeypatch):
 
     empty_settings = replace(settings, my_team_key="")
     monkeypatch.setenv("YAHOO_TEAM_ID", "7")
-    assert _my_team_key(empty_settings) == "422.l.87941.t.7"
+    assert _my_team_key(empty_settings) == "469.l.87941.t.7"
 
 
 def test_my_team_key_default_when_no_env(settings, monkeypatch):
@@ -119,7 +119,7 @@ def test_my_team_key_default_when_no_env(settings, monkeypatch):
     empty_settings = replace(settings, my_team_key="")
     monkeypatch.delenv("YAHOO_TEAM_ID", raising=False)
     key = _my_team_key(empty_settings)
-    assert key == "422.l.87941.t.1"
+    assert key == "469.l.87941.t.1"
 
 
 # ── _MLB_TEAM_ID_TO_ABBR ───────────────────────────────────────────────────────
