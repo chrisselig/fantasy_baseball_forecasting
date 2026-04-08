@@ -80,23 +80,28 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # OAuth2 from yahoo_oauth writes a token file by default.
-    # We pass a non-persistent in-memory store to avoid writing credentials
-    # to disk, then extract the tokens manually.
-    oauth = OAuth2(
-        consumer_key,
-        consumer_secret,
-        from_file=None,  # type: ignore[arg-type]
-    )
+    # OAuth2 from yahoo_oauth requires a file path for token storage.
+    # We use a temp file, extract the tokens, then delete it.
+    import json
+    import tempfile
 
-    # The OAuth2 object should now have a valid access token.
-    # Depending on the yahoo_oauth version the attributes may differ slightly.
-    access_token: str = getattr(oauth, "access_token", None) or getattr(
-        oauth, "access_token_key", ""
+    tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+    json.dump(
+        {"consumer_key": consumer_key, "consumer_secret": consumer_secret},
+        tmp,
     )
-    refresh_token: str = getattr(oauth, "refresh_token", None) or getattr(
-        oauth, "refresh_token_key", ""
-    )
+    tmp.close()
+    token_file = tmp.name
+
+    try:
+        oauth = OAuth2(None, None, from_file=token_file)
+    finally:
+        # Clean up the temp credentials file regardless of outcome
+        os.unlink(token_file)
+
+    # The OAuth2 object stores tokens as direct attributes.
+    access_token: str = str(getattr(oauth, "access_token", ""))
+    refresh_token: str = str(getattr(oauth, "refresh_token", ""))
 
     if not access_token:
         print(
