@@ -22,6 +22,7 @@ import pandas as pd
 
 from src.db.schema import (
     DIM_PLAYERS,
+    FACT_MATCHUPS,
     FACT_ROSTERS,
     FACT_TRANSACTIONS,
     FACT_WAIVER_SCORES,
@@ -332,4 +333,37 @@ def stage_free_agents(conn: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> int:
     logger.info(
         "stage_free_agents: staged %d rows in %s.", row_count, FACT_WAIVER_SCORES
     )
+    return row_count
+
+
+def load_matchups(
+    conn: duckdb.DuckDBPyConnection,
+    df: pd.DataFrame,
+) -> int:
+    """Upsert matchup data into fact_matchups.
+
+    Args:
+        conn: Open DuckDB connection.
+        df: DataFrame from ``YahooClient.get_current_matchup()``.
+            Must include ``matchup_id`` column.
+
+    Returns:
+        Number of rows upserted.
+    """
+    if df.empty:
+        logger.info("load_matchups: empty DataFrame, skipping.")
+        return 0
+
+    if "matchup_id" not in df.columns:
+        logger.warning("load_matchups: missing matchup_id column.")
+        return 0
+
+    conn.register("_matchup_staging", df)
+    conn.execute(
+        f"INSERT OR REPLACE INTO {FACT_MATCHUPS} SELECT * FROM _matchup_staging"
+    )
+    conn.unregister("_matchup_staging")
+
+    row_count = len(df)
+    logger.info("load_matchups: upserted %d rows.", row_count)
     return row_count

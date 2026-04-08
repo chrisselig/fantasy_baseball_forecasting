@@ -914,7 +914,10 @@ def get_active_mlb_players(season: int | None = None) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for person in data.get("people", []):
         mlb_id = person.get("id")
-        full_name = person.get("fullFMLName") or person.get("fullName", "")
+        # Use fullName (display name like "Vladimir Guerrero Jr.") not
+        # fullFMLName (includes middle names like "Vladimir Ainoah Guerrero Jr.")
+        # because Yahoo uses the short display name.
+        full_name = person.get("fullName", "")
         if mlb_id and full_name:
             rows.append({"full_name": full_name, "mlb_id": int(mlb_id)})
 

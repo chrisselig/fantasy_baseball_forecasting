@@ -558,7 +558,7 @@ class TestGetFreeAgents:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/423.l.87941/players",
+            BASE + "league/423.l.87941/players;status=FA;count=1",
             status=200,
             json=_free_agents_json(),
         )
@@ -576,7 +576,7 @@ class TestGetFreeAgents:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/423.l.87941/players",
+            BASE + "league/423.l.87941/players;status=FA;count=1",
             status=200,
             json=_free_agents_json(),
         )

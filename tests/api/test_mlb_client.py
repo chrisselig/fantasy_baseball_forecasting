@@ -942,7 +942,7 @@ class TestGetActiveMlbPlayers:
         assert len(df) == 2
         assert list(df.columns) == ["full_name", "mlb_id"]
         assert df.iloc[0]["mlb_id"] == 545361
-        assert df.iloc[0]["full_name"] == "Michael Nelson Trout"
+        assert df.iloc[0]["full_name"] == "Mike Trout"
 
     @patch("src.api.mlb_client._mlb_get")
     def test_skips_entries_without_id(self, mock_get: MagicMock) -> None:

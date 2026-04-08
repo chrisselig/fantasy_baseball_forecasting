@@ -362,12 +362,7 @@ class YahooClient:
         """
         league_key = self._league_key()
         data = self._get(
-            f"league/{league_key}/players",
-            params={
-                "status": "FA",
-                "count": count,
-                "out": "stats",
-            },
+            f"league/{league_key}/players;status=FA;count={count}",
         )
         return _parse_free_agents_response(data)
 
