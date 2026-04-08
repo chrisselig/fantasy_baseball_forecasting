@@ -476,7 +476,7 @@ def get_minor_league_stats(mlb_id: int, season: int) -> pd.DataFrame:
 # ── MLB Stats API: Daily stats & projections ────────────────────────────────
 
 # Boxscore endpoint for individual games
-_GAME_URL = "https://statsapi.mlb.com/api/v1.1/game"
+_GAME_URL = "https://statsapi.mlb.com/api/v1/game"
 
 
 def _fetch_boxscores_for_date(
