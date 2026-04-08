@@ -773,8 +773,8 @@ def _parse_free_agents_response(data: dict[str, Any]) -> pd.DataFrame:
                     continue
                 if "player_key" in item:
                     player_key = item["player_key"]
-                if "full_name" in item:
-                    full_name = item["full_name"]
+                if "name" in item and isinstance(item["name"], dict):
+                    full_name = item["name"].get("full", "")
                 if "editorial_team_abbr" in item:
                     team = item["editorial_team_abbr"]
                 if "status" in item:
@@ -979,8 +979,8 @@ def _parse_player_details(data: dict[str, Any]) -> list[dict[str, Any]]:
                         mlb_id = int(item["player_id"])
                     except (ValueError, TypeError):
                         mlb_id = None
-                if "full_name" in item:
-                    full_name = item["full_name"]
+                if "name" in item and isinstance(item["name"], dict):
+                    full_name = item["name"].get("full", "")
                 if "editorial_team_abbr" in item:
                     team = item["editorial_team_abbr"]
                 if "status" in item:

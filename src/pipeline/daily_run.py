@@ -66,6 +66,7 @@ from src.db.schema import (
     FACT_DAILY_REPORTS,
     FACT_MATCHUPS,
     FACT_PIPELINE_RUNS,
+    FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
     FACT_ROSTERS,
     FACT_TRANSACTIONS,
@@ -185,16 +186,21 @@ def _step_load_yahoo(
         players_df = yahoo.get_player_details(player_ids)
         row_counts[DIM_PLAYERS] = load_players(conn, players_df)
 
-    # Free agents — fetch with stats for waiver scoring
-    fa_df = yahoo.get_free_agents(count=100)
-    row_counts[FACT_WAIVER_SCORES] = stage_free_agents(conn, fa_df)
+    # Free agents — fetch with stats for waiver scoring.
+    # Wrapped in try/except so a failure here does not abort the entire Yahoo step
+    # (roster and player data above is more critical).
+    try:
+        fa_df = yahoo.get_free_agents(count=100)
+        row_counts[FACT_WAIVER_SCORES] = stage_free_agents(conn, fa_df)
 
-    # Load FA player details
-    if not fa_df.empty and "player_id" in fa_df.columns:
-        fa_ids: list[str] = fa_df["player_id"].tolist()
-        fa_players_df = yahoo.get_player_details(fa_ids)
-        existing = row_counts.get(DIM_PLAYERS, 0)
-        row_counts[DIM_PLAYERS] = existing + load_players(conn, fa_players_df)
+        # Load FA player details
+        if not fa_df.empty and "player_id" in fa_df.columns:
+            fa_ids: list[str] = fa_df["player_id"].tolist()
+            fa_players_df = yahoo.get_player_details(fa_ids)
+            existing = row_counts.get(DIM_PLAYERS, 0)
+            row_counts[DIM_PLAYERS] = existing + load_players(conn, fa_players_df)
+    except Exception as exc:
+        logger.warning("Free agent fetch failed (non-fatal): %s", exc)
 
     logger.info("Yahoo load complete. Row counts: %s", row_counts)
     return row_counts, fa_df
@@ -1163,6 +1169,20 @@ def run_daily_pipeline(
     except Exception as exc:
         errors.append(f"schema: {exc}")
         logger.error("Schema creation failed: %s", exc)
+
+    # Step 1b: Clean up stale stats that don't match any current player.
+    # Old pipeline runs wrote stats with player_ids using wrong game key
+    # prefixes (e.g. '422.p.*'). Remove stats rows whose player_id doesn't
+    # exist in dim_players so they don't pollute queries.
+    try:
+        for table in [FACT_PLAYER_STATS_DAILY, FACT_PROJECTIONS]:
+            conn.execute(
+                f"DELETE FROM {table} WHERE player_id NOT IN "
+                f"(SELECT player_id FROM {DIM_PLAYERS})"
+            )
+        logger.info("Cleaned orphaned stats rows.")
+    except Exception as exc:
+        logger.warning("Stale data cleanup failed (non-fatal): %s", exc)
 
     # Step 2: Load Yahoo data
     fa_df: pd.DataFrame = pd.DataFrame()

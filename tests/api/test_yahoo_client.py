@@ -248,7 +248,7 @@ def _roster_json(team_key: str = "423.l.87941.t.1") -> dict:  # type: ignore[typ
                                     "player": [
                                         [
                                             {"player_key": "423.p.7578"},
-                                            {"full_name": "Yordan Alvarez"},
+                                            {"name": {"full": "Yordan Alvarez"}},
                                             {"acquisition_type": "draft"},
                                         ],
                                         {"selected_position": [{"position": "1B"}]},
@@ -525,7 +525,7 @@ def _free_agents_json() -> dict:  # type: ignore[type-arg]
                             "player": [
                                 [
                                     {"player_key": "423.p.9999"},
-                                    {"full_name": "Test Player"},
+                                    {"name": {"full": "Test Player"}},
                                     {"editorial_team_abbr": "NYY"},
                                     {"status": "Active"},
                                     {"eligible_positions": [{"position": "OF"}]},
@@ -679,7 +679,7 @@ def _player_details_json() -> dict:  # type: ignore[type-arg]
                         [
                             {"player_key": "423.p.7578"},
                             {"player_id": "660670"},
-                            {"full_name": "Yordan Alvarez"},
+                            {"name": {"full": "Yordan Alvarez"}},
                             {"editorial_team_abbr": "HOU"},
                             {"status": "Active"},
                             {
