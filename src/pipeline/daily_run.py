@@ -53,6 +53,7 @@ from src.db.loaders_mlb import (
     get_fantasy_week,
     load_daily_stats,
     load_projections,
+    update_player_crosswalk,
 )
 from src.db.loaders_yahoo import (
     load_players,
@@ -1171,6 +1172,20 @@ def run_daily_pipeline(
     except Exception as exc:
         errors.append(f"yahoo: {exc}")
         logger.error("Yahoo load failed: %s", exc)
+
+    # Step 2b: Crosswalk — update dim_players.mlb_id with real MLBAM IDs.
+    # Yahoo stores its own internal player_id as mlb_id, which doesn't match
+    # the MLB Stats API's MLBAM IDs. This step fetches active MLB players by
+    # name and updates dim_players so the stats join in Step 3 works.
+    try:
+        active_players = mlb_client.get_active_mlb_players(season)
+        if not active_players.empty:
+            crosswalk_count = update_player_crosswalk(conn, active_players)
+            rows_written["crosswalk"] = crosswalk_count
+            logger.info("MLBAM crosswalk updated %d players.", crosswalk_count)
+    except Exception as exc:
+        errors.append(f"crosswalk: {exc}")
+        logger.error("MLBAM crosswalk failed: %s", exc)
 
     # Step 3: Load MLB stats
     schedule_df: pd.DataFrame = pd.DataFrame(columns=["player_id"])

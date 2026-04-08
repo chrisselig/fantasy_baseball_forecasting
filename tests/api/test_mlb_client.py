@@ -19,6 +19,7 @@ import requests
 from src.api.mlb_client import (
     _empty_df,
     build_player_id_crosswalk,
+    get_active_mlb_players,
     get_batter_stats,
     get_daily_game_schedule,
     get_minor_league_stats,
@@ -911,6 +912,57 @@ class TestBuildPlayerIdCrosswalk:
 
         assert len(df) == 1
         assert df.iloc[0]["mlb_id"] == 12345
+
+
+# ── get_active_mlb_players ────────────────────────────────────────────────────
+
+
+class TestGetActiveMlbPlayers:
+    """Tests for get_active_mlb_players()."""
+
+    @patch("src.api.mlb_client._mlb_get")
+    def test_returns_active_players(self, mock_get: MagicMock) -> None:
+        """Returns DataFrame with full_name and mlb_id columns."""
+        mock_get.return_value = {
+            "people": [
+                {
+                    "id": 545361,
+                    "fullFMLName": "Michael Nelson Trout",
+                    "fullName": "Mike Trout",
+                },
+                {
+                    "id": 660271,
+                    "fullFMLName": "Shohei Ohtani",
+                    "fullName": "Shohei Ohtani",
+                },
+            ]
+        }
+        df = get_active_mlb_players(2026)
+
+        assert len(df) == 2
+        assert list(df.columns) == ["full_name", "mlb_id"]
+        assert df.iloc[0]["mlb_id"] == 545361
+        assert df.iloc[0]["full_name"] == "Michael Nelson Trout"
+
+    @patch("src.api.mlb_client._mlb_get")
+    def test_skips_entries_without_id(self, mock_get: MagicMock) -> None:
+        """Skips people entries missing an id."""
+        mock_get.return_value = {
+            "people": [
+                {"id": 545361, "fullName": "Mike Trout"},
+                {"fullName": "Missing ID"},
+            ]
+        }
+        df = get_active_mlb_players(2026)
+        assert len(df) == 1
+
+    @patch("src.api.mlb_client._mlb_get")
+    def test_returns_empty_on_api_error(self, mock_get: MagicMock) -> None:
+        """Returns empty DataFrame on request failure."""
+        mock_get.side_effect = requests.RequestException("timeout")
+        df = get_active_mlb_players(2026)
+        assert df.empty
+        assert list(df.columns) == ["full_name", "mlb_id"]
 
 
 # ── _empty_df helper test ─────────────────────────────────────────────────────

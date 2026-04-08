@@ -881,6 +881,48 @@ def get_steamer_projections(season: int) -> pd.DataFrame:
     return _empty_df(_PROJECTIONS_COLUMNS)
 
 
+# ── Active player lookup (for MLBAM ID crosswalk) ────────────────────────────
+
+
+def get_active_mlb_players(season: int | None = None) -> pd.DataFrame:
+    """Fetch all active MLB players from the MLB Stats API.
+
+    Source: GET /sports/1/players?season=YYYY
+
+    Returns a DataFrame with full_name and mlb_id (MLBAM ID) for every player
+    on an active MLB roster. Used to crosswalk Yahoo player names to MLBAM IDs
+    so that daily stats can be joined correctly.
+
+    Args:
+        season: MLB season year. Defaults to current year.
+
+    Returns:
+        DataFrame with columns: full_name (str), mlb_id (int)
+    """
+    if season is None:
+        season = datetime.date.today().year
+
+    url = f"{_MLB_BASE}/sports/1/players"
+    params: dict[str, Any] = {"season": season}
+
+    try:
+        data = _mlb_get(url, params=params)
+    except requests.RequestException as exc:
+        logger.warning("Failed to fetch active MLB players: %s", exc)
+        return pd.DataFrame(columns=["full_name", "mlb_id"])
+
+    rows: list[dict[str, Any]] = []
+    for person in data.get("people", []):
+        mlb_id = person.get("id")
+        full_name = person.get("fullFMLName") or person.get("fullName", "")
+        if mlb_id and full_name:
+            rows.append({"full_name": full_name, "mlb_id": int(mlb_id)})
+
+    df = pd.DataFrame(rows, columns=["full_name", "mlb_id"])
+    logger.info("Fetched %d active MLB players for season %d.", len(df), season)
+    return df
+
+
 # ── Player ID crosswalk ───────────────────────────────────────────────────────
 
 
