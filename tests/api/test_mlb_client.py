@@ -522,7 +522,6 @@ class TestGetBatterStats:
             df = get_batter_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
 
         assert list(df.columns) == [
-            "player_id",
             "mlb_id",
             "stat_date",
             "ab",
@@ -547,7 +546,6 @@ class TestGetBatterStats:
             df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         expected_cols = [
-            "player_id",
             "mlb_id",
             "stat_date",
             "ab",

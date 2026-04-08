@@ -85,9 +85,9 @@ _MINOR_LEAGUE_COLUMNS = [
     "era",
 ]
 
-# Columns matching fact_player_stats_daily (batter portion)
+# Columns matching fact_player_stats_daily (batter portion).
+# player_id is NOT included — callers map mlb_id → player_id via dim_players.
 _BATTER_STATS_COLUMNS = [
-    "player_id",
     "mlb_id",
     "stat_date",
     "ab",
@@ -574,7 +574,6 @@ def _extract_batter_rows(
 
                 rows.append(
                     {
-                        "player_id": None,
                         "mlb_id": int(mlb_id),
                         "stat_date": stat_date,
                         "ab": ab,
@@ -677,7 +676,6 @@ def get_batter_stats(
 
     Returns:
         DataFrame with columns matching fact_player_stats_daily:
-            player_id (None — caller maps via dim_players.mlb_id),
             mlb_id, stat_date, ab, h, hr, sb, bb, hbp, sf, tb,
             avg, ops, fpct, errors, chances
     """

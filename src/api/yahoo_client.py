@@ -218,16 +218,74 @@ class YahooClient:
 
     # ── Data fetch methods ────────────────────────────────────────────────────
 
+    def _game_key(self) -> str:
+        """Return the Yahoo game key for the current MLB season.
+
+        Checks (in order):
+        1. YAHOO_GAME_KEY env var (explicit override).
+        2. Auto-detect by querying Yahoo's ``games;game_codes=mlb`` endpoint
+           and picking the game with the latest season.
+
+        The result is cached after the first successful lookup.
+        """
+        if hasattr(self, "_cached_game_key"):
+            return self._cached_game_key
+
+        # 1. Explicit override
+        from_env = os.environ.get("YAHOO_GAME_KEY", "")
+        if from_env:
+            self._cached_game_key: str = from_env
+            return self._cached_game_key
+
+        # 2. Auto-detect from Yahoo API
+        try:
+            self._refresh_token_if_needed()
+            response = requests.get(
+                BASE_URL + "games;game_codes=mlb",
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                params={"format": "json"},
+                timeout=30,
+            )
+            if response.ok:
+                data = response.json()
+                games = _safe_get(data, "fantasy_content", "games", default={})
+                best_key = ""
+                best_season = 0
+                for k, v in games.items():
+                    if k == "count" or not isinstance(v, dict):
+                        continue
+                    game = v.get("game", [])
+                    for item in game:
+                        if isinstance(item, dict):
+                            season = int(item.get("season", 0))
+                            gk = str(item.get("game_key", ""))
+                            if season > best_season and gk:
+                                best_season = season
+                                best_key = gk
+                if best_key:
+                    logger.info(
+                        "Auto-detected Yahoo game key: %s (season %d)",
+                        best_key,
+                        best_season,
+                    )
+                    self._cached_game_key = best_key
+                    return self._cached_game_key
+        except Exception as exc:
+            logger.warning("Game key auto-detection failed: %s", exc)
+
+        # Fallback
+        self._cached_game_key = "423"
+        logger.warning("Using fallback game key: %s", self._cached_game_key)
+        return self._cached_game_key
+
     def _league_key(self) -> str:
         """Return the Yahoo league key (game_key.l.league_id).
 
-        The game key for MLB fantasy in Yahoo is '423' (2026 season).
-        The league ID is read from the YAHOO_LEAGUE_ID env var if set,
-        otherwise falls back to the hard-coded Vlad Guerrero Invitational ID.
-        Never hardcodes the ID directly in any API call.
+        The game key is auto-detected from the Yahoo API for the current
+        MLB season. Override with the YAHOO_GAME_KEY env var if needed.
         """
         league_id = os.environ.get("YAHOO_LEAGUE_ID", "87941")
-        return f"423.l.{league_id}"
+        return f"{self._game_key()}.l.{league_id}"
 
     def _my_team_key(self) -> str:
         """Return the Yahoo team key for the authenticated user's team.
