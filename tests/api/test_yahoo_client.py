@@ -234,7 +234,7 @@ class TestTokenRefresh:
 # ── get_my_roster tests ───────────────────────────────────────────────────────
 
 
-def _roster_json(team_key: str = "422.l.87941.t.1") -> dict:  # type: ignore[type-arg]
+def _roster_json(team_key: str = "423.l.87941.t.1") -> dict:  # type: ignore[type-arg]
     """Minimal realistic Yahoo roster JSON for a single team."""
     return {
         "fantasy_content": {
@@ -247,7 +247,7 @@ def _roster_json(team_key: str = "422.l.87941.t.1") -> dict:  # type: ignore[typ
                                 "0": {
                                     "player": [
                                         [
-                                            {"player_key": "422.p.7578"},
+                                            {"player_key": "423.p.7578"},
                                             {"full_name": "Yordan Alvarez"},
                                             {"acquisition_type": "draft"},
                                         ],
@@ -274,7 +274,7 @@ class TestGetMyRoster:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/422.l.87941.t.1/roster",
+            BASE + "team/423.l.87941.t.1/roster",
             status=200,
             json=_roster_json(),
         )
@@ -299,21 +299,21 @@ class TestGetMyRoster:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/422.l.87941.t.1/roster",
+            BASE + "team/423.l.87941.t.1/roster",
             status=200,
             json=_roster_json(),
         )
 
         df = client.get_my_roster(week=1)
-        assert "422.p.7578" in df["player_id"].values
-        assert df.loc[df["player_id"] == "422.p.7578", "roster_slot"].iloc[0] == "1B"
+        assert "423.p.7578" in df["player_id"].values
+        assert df.loc[df["player_id"] == "423.p.7578", "roster_slot"].iloc[0] == "1B"
 
 
 # ── get_all_rosters tests ─────────────────────────────────────────────────────
 
 
 def _all_rosters_json() -> dict:  # type: ignore[type-arg]
-    team_payload = _roster_json("422.l.87941.t.1")["fantasy_content"]["team"]
+    team_payload = _roster_json("423.l.87941.t.1")["fantasy_content"]["team"]
     return {
         "fantasy_content": {
             "league": [
@@ -338,7 +338,7 @@ class TestGetAllRosters:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/422.l.87941/teams/roster",
+            BASE + "league/423.l.87941/teams/roster",
             status=200,
             json=_all_rosters_json(),
         )
@@ -362,7 +362,7 @@ def _matchup_json() -> dict:  # type: ignore[type-arg]
     return {
         "fantasy_content": {
             "team": [
-                [{"team_key": "422.l.87941.t.1"}],
+                [{"team_key": "423.l.87941.t.1"}],
                 {
                     "matchups": {
                         "0": {
@@ -373,7 +373,7 @@ def _matchup_json() -> dict:  # type: ignore[type-arg]
                                 "teams": {
                                     "0": {
                                         "team": [
-                                            [{"team_key": "422.l.87941.t.1"}],
+                                            [{"team_key": "423.l.87941.t.1"}],
                                             {
                                                 "team_stats": {
                                                     "stats": [
@@ -414,7 +414,7 @@ def _matchup_json() -> dict:  # type: ignore[type-arg]
                                     },
                                     "1": {
                                         "team": [
-                                            [{"team_key": "422.l.87941.t.2"}],
+                                            [{"team_key": "423.l.87941.t.2"}],
                                             {
                                                 "team_stats": {
                                                     "stats": [
@@ -475,7 +475,7 @@ class TestGetCurrentMatchup:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/422.l.87941.t.1/matchups",
+            BASE + "team/423.l.87941.t.1/matchups",
             status=200,
             json=_matchup_json(),
         )
@@ -501,7 +501,7 @@ class TestGetCurrentMatchup:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/422.l.87941.t.1/matchups",
+            BASE + "team/423.l.87941.t.1/matchups",
             status=200,
             json=_matchup_json(),
         )
@@ -524,7 +524,7 @@ def _free_agents_json() -> dict:  # type: ignore[type-arg]
                         "0": {
                             "player": [
                                 [
-                                    {"player_key": "422.p.9999"},
+                                    {"player_key": "423.p.9999"},
                                     {"full_name": "Test Player"},
                                     {"editorial_team_abbr": "NYY"},
                                     {"status": "Active"},
@@ -558,7 +558,7 @@ class TestGetFreeAgents:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/422.l.87941/players",
+            BASE + "league/423.l.87941/players",
             status=200,
             json=_free_agents_json(),
         )
@@ -576,14 +576,14 @@ class TestGetFreeAgents:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/422.l.87941/players",
+            BASE + "league/423.l.87941/players",
             status=200,
             json=_free_agents_json(),
         )
 
         df = client.get_free_agents(count=1)
         assert len(df) == 1
-        assert df.iloc[0]["player_id"] == "422.p.9999"
+        assert df.iloc[0]["player_id"] == "423.p.9999"
         assert df.iloc[0]["team"] == "NYY"
 
 
@@ -603,20 +603,20 @@ def _transactions_json() -> dict:  # type: ignore[type-arg]
                         "0": {
                             "transaction": [
                                 [
-                                    {"transaction_key": "422.l.87941.tr.1"},
+                                    {"transaction_key": "423.l.87941.tr.1"},
                                     {"type": "add"},
                                     {"timestamp": str(recent_ts)},
                                     {
                                         "players": {
                                             "0": {
                                                 "player": [
-                                                    [{"player_key": "422.p.7578"}],
+                                                    [{"player_key": "423.p.7578"}],
                                                     {
                                                         "transaction_data": [
                                                             {
                                                                 "transaction_data": {
                                                                     "type": "add",
-                                                                    "destination_team_key": "422.l.87941.t.3",
+                                                                    "destination_team_key": "423.l.87941.t.3",
                                                                     "source_team_key": None,
                                                                 }
                                                             }
@@ -647,7 +647,7 @@ class TestGetTransactions:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/422.l.87941/transactions",
+            BASE + "league/423.l.87941/transactions",
             status=200,
             json=_transactions_json(),
         )
@@ -677,7 +677,7 @@ def _player_details_json() -> dict:  # type: ignore[type-arg]
                 "0": {
                     "player": [
                         [
-                            {"player_key": "422.p.7578"},
+                            {"player_key": "423.p.7578"},
                             {"player_id": "660670"},
                             {"full_name": "Yordan Alvarez"},
                             {"editorial_team_abbr": "HOU"},
@@ -704,12 +704,12 @@ class TestGetPlayerDetails:
     def test_returns_dataframe_with_correct_columns(self, client: YahooClient) -> None:
         responses_lib.add(
             responses_lib.GET,
-            BASE + "players;player_keys=422.p.7578",
+            BASE + "players;player_keys=423.p.7578",
             status=200,
             json=_player_details_json(),
         )
 
-        df = client.get_player_details(["422.p.7578"])
+        df = client.get_player_details(["423.p.7578"])
         assert isinstance(df, pd.DataFrame)
         required = {
             "player_id",
@@ -728,15 +728,15 @@ class TestGetPlayerDetails:
     def test_player_data_parsed_correctly(self, client: YahooClient) -> None:
         responses_lib.add(
             responses_lib.GET,
-            BASE + "players;player_keys=422.p.7578",
+            BASE + "players;player_keys=423.p.7578",
             status=200,
             json=_player_details_json(),
         )
 
-        df = client.get_player_details(["422.p.7578"])
+        df = client.get_player_details(["423.p.7578"])
         assert len(df) == 1
         row = df.iloc[0]
-        assert row["player_id"] == "422.p.7578"
+        assert row["player_id"] == "423.p.7578"
         assert row["full_name"] == "Yordan Alvarez"
         assert row["team"] == "HOU"
         assert row["bats"] == "L"
@@ -763,7 +763,7 @@ def _standings_json() -> dict:  # type: ignore[type-arg]
                                 "0": {
                                     "team": [
                                         [
-                                            {"team_key": "422.l.87941.t.1"},
+                                            {"team_key": "423.l.87941.t.1"},
                                             {"name": "Murderers' Row"},
                                             {
                                                 "team_standings": {
@@ -797,7 +797,7 @@ class TestGetStandings:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/422.l.87941/standings",
+            BASE + "league/423.l.87941/standings",
             status=200,
             json=_standings_json(),
         )
@@ -815,7 +815,7 @@ class TestGetStandings:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/422.l.87941/standings",
+            BASE + "league/423.l.87941/standings",
             status=200,
             json=_standings_json(),
         )
@@ -823,7 +823,7 @@ class TestGetStandings:
         df = client.get_standings()
         assert len(df) == 1
         row = df.iloc[0]
-        assert row["team_id"] == "422.l.87941.t.1"
+        assert row["team_id"] == "423.l.87941.t.1"
         assert row["team_name"] == "Murderers' Row"
         assert row["wins"] == 50
         assert row["rank"] == 1
@@ -839,7 +839,7 @@ class TestParsers:
         assert len(df) == 0
 
     def test_parse_matchup_response_empty_data(self) -> None:
-        df = _parse_matchup_response({}, league_key="422.l.87941")
+        df = _parse_matchup_response({}, league_key="423.l.87941")
         assert isinstance(df, pd.DataFrame)
         assert "matchup_id" in df.columns
 
@@ -862,14 +862,14 @@ class TestParsers:
                             "0": {
                                 "transaction": [
                                     [
-                                        {"transaction_key": "422.l.87941.tr.99"},
+                                        {"transaction_key": "423.l.87941.tr.99"},
                                         {"type": "add"},
                                         {"timestamp": str(old_ts)},
                                         {
                                             "players": {
                                                 "0": {
                                                     "player": [
-                                                        [{"player_key": "422.p.0001"}],
+                                                        [{"player_key": "423.p.0001"}],
                                                         {"transaction_data": []},
                                                     ]
                                                 },
@@ -892,7 +892,7 @@ class TestParsers:
         rows = _parse_player_details(_player_details_json())
         assert isinstance(rows, list)
         assert len(rows) == 1
-        assert rows[0]["player_id"] == "422.p.7578"
+        assert rows[0]["player_id"] == "423.p.7578"
 
     def test_parse_standings_response_empty_data(self) -> None:
         df = _parse_standings_response({})

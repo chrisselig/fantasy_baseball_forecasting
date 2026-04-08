@@ -3,7 +3,7 @@ server.py
 
 Reactive server logic for the Shiny app.
 All expensive operations go in @reactive.calc (cached).
-Stub data is used when DB is unavailable.
+Returns empty results when data is unavailable.
 """
 
 from __future__ import annotations
@@ -18,14 +18,6 @@ from htmltools import Tag
 from shiny import Inputs, Outputs, Session, reactive, render, ui
 
 from src.analysis.hot_cold import annotate_with_streaks, match_win_probability
-from src.app.stubs import (
-    STUB_DAILY_REPORT,
-    STUB_NEWS_DF,
-    STUB_ROSTER_DF,
-    STUB_TRADES,
-    STUB_TRANSACTIONS_DF,
-    STUB_WAIVER_DF,
-)
 from src.config import load_league_settings
 from src.db.connection import managed_connection
 from src.db.schema import (
@@ -246,6 +238,31 @@ def _load_data_freshness() -> dict[str, object]:
     }
 
 
+_EMPTY_ROSTER_COLS: list[str] = [
+    "slot",
+    "player_id",
+    "player_name",
+    "team",
+    "position",
+    "h",
+    "hr",
+    "sb",
+    "bb",
+    "avg",
+    "ops",
+    "w",
+    "k",
+    "whip",
+    "k_bb",
+    "sv_h",
+]
+
+
+def _empty_roster_df() -> pd.DataFrame:
+    """Return an empty DataFrame with the expected roster columns."""
+    return pd.DataFrame(columns=_EMPTY_ROSTER_COLS)
+
+
 def _load_daily_report() -> dict[str, Any]:
     """Load the most recent pre-built report from MotherDuck."""
     try:
@@ -260,7 +277,7 @@ def _load_daily_report() -> dict[str, Any]:
                 return dict(json.loads(str(result[0])))
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load daily report from DB: %s", exc)
-    return dict(STUB_DAILY_REPORT)
+    return {}
 
 
 def _load_recent_daily_stats(window_days: int = 10) -> pd.DataFrame:
@@ -286,7 +303,7 @@ def _load_roster() -> pd.DataFrame:
     """Load current roster from MotherDuck with streak annotations."""
     team_key = _get_my_team_key()
     if not team_key:
-        return STUB_ROSTER_DF.copy()
+        return _empty_roster_df()
 
     try:
         with managed_connection() as conn:
@@ -295,7 +312,7 @@ def _load_roster() -> pd.DataFrame:
                 [team_key],
             ).fetchone()
             if not snap_row or not snap_row[0]:
-                return STUB_ROSTER_DF.copy()
+                return _empty_roster_df()
             latest_snapshot = snap_row[0]
 
             import datetime as _dt
@@ -366,7 +383,7 @@ def _load_roster() -> pd.DataFrame:
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load roster from DB: %s", exc)
-    return STUB_ROSTER_DF.copy()
+    return _empty_roster_df()
 
 
 def _load_waiver_data() -> pd.DataFrame:
@@ -403,14 +420,11 @@ def _load_waiver_data() -> pd.DataFrame:
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load waiver data from DB: %s", exc)
-    return STUB_WAIVER_DF.copy()
+    return pd.DataFrame()
 
 
 def _load_transactions() -> pd.DataFrame:
-    """Load recent MLB transactions from MotherDuck.
-
-    Falls back to stubs when the table is empty or unavailable.
-    """
+    """Load recent MLB transactions from MotherDuck."""
     try:
         with managed_connection() as conn:
             df: pd.DataFrame = conn.execute(f"""
@@ -426,7 +440,7 @@ def _load_transactions() -> pd.DataFrame:
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load transactions from DB: %s", exc)
-    return STUB_TRANSACTIONS_DF.copy()
+    return pd.DataFrame()
 
 
 def _load_projections() -> pd.DataFrame:
@@ -455,7 +469,7 @@ def _load_projections() -> pd.DataFrame:
 
 
 def _load_news(days: int = 3) -> pd.DataFrame:
-    """Load recent player news from MotherDuck, falling back to stubs.
+    """Load recent player news from MotherDuck.
 
     Args:
         days: Number of days back to load news for.
@@ -475,7 +489,7 @@ def _load_news(days: int = 3) -> pd.DataFrame:
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load news from DB: %s", exc)
-    return STUB_NEWS_DF.copy()
+    return pd.DataFrame()
 
 
 # ── Server ─────────────────────────────────────────────────────────────────
@@ -502,7 +516,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         report_date = freshness.get("report_date")
         if is_offline:
             error_detail = str(freshness.get("error", ""))
-            msg = "⚠️ Offline — showing cached data."
+            msg = "⚠️ No pipeline data available — run the daily pipeline to populate."
             if error_detail:
                 msg += f" ({error_detail[:120]})"
             return ui.div(ui.span(msg), class_="alert alert-danger mb-0 py-1")
@@ -1317,7 +1331,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
 
     @render.ui
     def trades_ui() -> Tag:
-        trades = STUB_TRADES
+        report = daily_report()
+        trades = report.get("trades", [])
         if not trades:
             return ui.p("No trade proposals available.", style="color:#888;")
         cards: list[Any] = []
