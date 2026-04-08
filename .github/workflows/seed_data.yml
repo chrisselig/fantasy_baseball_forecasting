@@ -1,9 +1,7 @@
 name: Seed MotherDuck (2025 simulation)
 
 on:
-  schedule:
-    # Run daily at 9 am MT (3 pm UTC) — same cadence as the real pipeline
-    - cron: '0 15 * * *'
+  # Disabled for 2026 season — use daily_pipeline.yml instead
   workflow_dispatch:
     inputs:
       run_date:

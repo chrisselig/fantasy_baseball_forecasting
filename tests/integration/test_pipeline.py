@@ -74,7 +74,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
     - fact_player_stats_daily: 2 days of stats for this week
     - fact_waiver_scores: staged FA records (score=0)
     """
-    my_team_key = "422.l.87941.t.3"
+    my_team_key = "423.l.87941.t.10"
     week_start = today - datetime.timedelta(days=today.weekday())
 
     # ── dim_players ────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
         [
             # My roster
             {
-                "player_id": "422.p.1",
+                "player_id": "423.p.1",
                 "full_name": "Aaron Judge",
                 "mlb_id": 592450,
                 "fg_id": "16378",
@@ -94,7 +94,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                 "updated_at": None,
             },
             {
-                "player_id": "422.p.2",
+                "player_id": "423.p.2",
                 "full_name": "Freddie Freeman",
                 "mlb_id": 518692,
                 "fg_id": "7163",
@@ -106,7 +106,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                 "updated_at": None,
             },
             {
-                "player_id": "422.p.3",
+                "player_id": "423.p.3",
                 "full_name": "Gerrit Cole",
                 "mlb_id": 543037,
                 "fg_id": "13125",
@@ -118,7 +118,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                 "updated_at": None,
             },
             {
-                "player_id": "422.p.4",
+                "player_id": "423.p.4",
                 "full_name": "Emmanuel Clase",
                 "mlb_id": 669373,
                 "fg_id": "22235",
@@ -130,7 +130,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                 "updated_at": None,
             },
             {
-                "player_id": "422.p.5",
+                "player_id": "423.p.5",
                 "full_name": "Yordan Alvarez",
                 "mlb_id": 670541,
                 "fg_id": "19556",
@@ -143,7 +143,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
             },
             # Free agents
             {
-                "player_id": "422.p.6",
+                "player_id": "423.p.6",
                 "full_name": "Jackson Chourio",
                 "mlb_id": 672921,
                 "fg_id": "26490",
@@ -155,7 +155,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                 "updated_at": None,
             },
             {
-                "player_id": "422.p.7",
+                "player_id": "423.p.7",
                 "full_name": "Kyle Freeland",
                 "mlb_id": 621433,
                 "fg_id": "15678",
@@ -182,35 +182,35 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
         [
             {
                 "team_id": my_team_key,
-                "player_id": "422.p.1",
+                "player_id": "423.p.1",
                 "snapshot_date": today,
                 "roster_slot": "OF",
                 "acquisition_type": "draft",
             },
             {
                 "team_id": my_team_key,
-                "player_id": "422.p.2",
+                "player_id": "423.p.2",
                 "snapshot_date": today,
                 "roster_slot": "1B",
                 "acquisition_type": "draft",
             },
             {
                 "team_id": my_team_key,
-                "player_id": "422.p.3",
+                "player_id": "423.p.3",
                 "snapshot_date": today,
                 "roster_slot": "SP",
                 "acquisition_type": "draft",
             },
             {
                 "team_id": my_team_key,
-                "player_id": "422.p.4",
+                "player_id": "423.p.4",
                 "snapshot_date": today,
                 "roster_slot": "RP",
                 "acquisition_type": "waiver",
             },
             {
                 "team_id": my_team_key,
-                "player_id": "422.p.5",
+                "player_id": "423.p.5",
                 "snapshot_date": today,
                 "roster_slot": "Util",
                 "acquisition_type": "draft",
@@ -228,7 +228,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
         stats_rows.extend(
             [
                 {
-                    "player_id": "422.p.1",
+                    "player_id": "423.p.1",
                     "stat_date": stat_date,
                     "ab": 4,
                     "h": 2,
@@ -255,7 +255,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                     "sv_h": None,
                 },
                 {
-                    "player_id": "422.p.3",
+                    "player_id": "423.p.3",
                     "stat_date": stat_date,
                     "ab": None,
                     "h": None,
@@ -294,7 +294,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
     fa_staged = pd.DataFrame(
         [
             {
-                "player_id": "422.p.6",
+                "player_id": "423.p.6",
                 "score_date": today,
                 "overall_score": 0.0,
                 "category_scores": None,
@@ -304,7 +304,7 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
                 "notes": None,
             },
             {
-                "player_id": "422.p.7",
+                "player_id": "423.p.7",
                 "score_date": today,
                 "overall_score": 0.0,
                 "category_scores": None,
@@ -330,11 +330,11 @@ def test_daily_report_roundtrip(seeded_conn, today, week):
     report = {
         "report_date": today.isoformat(),
         "week_number": week,
-        "lineup": {"OF": "422.p.1", "1B": "422.p.2", "SP": "422.p.3"},
+        "lineup": {"OF": "423.p.1", "1B": "423.p.2", "SP": "423.p.3"},
         "adds": [
             {
-                "add_player_id": "422.p.6",
-                "drop_player_id": "422.p.4",
+                "add_player_id": "423.p.6",
+                "drop_player_id": "423.p.4",
                 "reason": "Adds value in: h, hr",
                 "score": 12.5,
                 "categories_improved": ["h", "hr"],
@@ -372,9 +372,9 @@ def test_daily_report_roundtrip(seeded_conn, today, week):
     parsed = json.loads(row[0])
 
     assert parsed["week_number"] == week
-    assert parsed["lineup"]["OF"] == "422.p.1"
+    assert parsed["lineup"]["OF"] == "423.p.1"
     assert len(parsed["adds"]) == 1
-    assert parsed["adds"][0]["add_player_id"] == "422.p.6"
+    assert parsed["adds"][0]["add_player_id"] == "423.p.6"
     assert parsed["ip_pace"]["on_pace"] is True
     assert row[2] == today.year
 
@@ -387,14 +387,14 @@ def _make_mock_roster_df(team_key: str, today: datetime.date) -> pd.DataFrame:
         [
             {
                 "team_id": team_key,
-                "player_id": "422.p.1",
+                "player_id": "423.p.1",
                 "snapshot_date": today,
                 "roster_slot": "OF",
                 "acquisition_type": "draft",
             },
             {
                 "team_id": team_key,
-                "player_id": "422.p.3",
+                "player_id": "423.p.3",
                 "snapshot_date": today,
                 "roster_slot": "SP",
                 "acquisition_type": "draft",
@@ -434,7 +434,7 @@ def _make_mock_players_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "player_id": "422.p.1",
+                "player_id": "423.p.1",
                 "full_name": "Aaron Judge",
                 "mlb_id": 592450,
                 "fg_id": "16378",
@@ -453,7 +453,7 @@ def _make_mock_fa_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "player_id": "422.p.6",
+                "player_id": "423.p.6",
                 "full_name": "Jackson Chourio",
                 "team": "MIL",
                 "positions": ["OF"],
@@ -477,8 +477,8 @@ def _make_mock_fa_df() -> pd.DataFrame:
 
 def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
     """End-to-end pipeline: mocked APIs + in-memory DB → report written."""
-    team_key = "422.l.87941.t.3"
-    monkeypatch.setenv("YAHOO_TEAM_ID", "3")
+    team_key = "423.l.87941.t.10"
+    monkeypatch.setenv("YAHOO_TEAM_ID", "10")
 
     mock_yahoo = mock.MagicMock()
     mock_yahoo.get_my_roster.return_value = _make_mock_roster_df(team_key, today)
@@ -582,8 +582,8 @@ def test_pipeline_survives_yahoo_failure(conn, settings, today, monkeypatch):
 
 def test_pipeline_idempotent(conn, settings, today, monkeypatch):
     """Running the pipeline twice on the same day replaces the report (idempotent)."""
-    monkeypatch.setenv("YAHOO_TEAM_ID", "3")
-    team_key = "422.l.87941.t.3"
+    monkeypatch.setenv("YAHOO_TEAM_ID", "10")
+    team_key = "423.l.87941.t.10"
 
     mock_yahoo = mock.MagicMock()
     mock_yahoo.get_my_roster.return_value = _make_mock_roster_df(team_key, today)

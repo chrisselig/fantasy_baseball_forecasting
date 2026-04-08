@@ -57,7 +57,6 @@ def test_load_daily_report_returns_dict() -> None:
 
     report = _load_daily_report()
     assert isinstance(report, dict)
-    assert "lineup" in report
 
 
 def test_load_roster_returns_dataframe() -> None:

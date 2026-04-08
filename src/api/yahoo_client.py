@@ -218,20 +218,20 @@ class YahooClient:
     def _league_key(self) -> str:
         """Return the Yahoo league key (game_key.l.league_id).
 
-        The game key for MLB fantasy in Yahoo is '422'.
+        The game key for MLB fantasy in Yahoo is '423' (2026 season).
         The league ID is read from the YAHOO_LEAGUE_ID env var if set,
         otherwise falls back to the hard-coded Vlad Guerrero Invitational ID.
         Never hardcodes the ID directly in any API call.
         """
         league_id = os.environ.get("YAHOO_LEAGUE_ID", "87941")
-        return f"422.l.{league_id}"
+        return f"423.l.{league_id}"
 
     def _my_team_key(self) -> str:
         """Return the Yahoo team key for the authenticated user's team.
 
         Read from YAHOO_TEAM_ID env var (just the integer part).
         """
-        team_id = os.environ.get("YAHOO_TEAM_ID", "1")
+        team_id = os.environ.get("YAHOO_TEAM_ID", "10")
         return f"{self._league_key()}.t.{team_id}"
 
     # ── Roster ────────────────────────────────────────────────────────────────
