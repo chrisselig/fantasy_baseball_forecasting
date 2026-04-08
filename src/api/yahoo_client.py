@@ -81,9 +81,12 @@ class YahooClient:
         self._consumer_secret = consumer_secret
         self._access_token = access_token
         self._refresh_token = refresh_token
-        # Track when the current access token was issued so we can pre-emptively
-        # refresh before it actually expires.
-        self._token_issued_at: float = datetime.now(tz=UTC).timestamp()
+        # Force a token refresh on the first API call.  The access token
+        # loaded from env vars / secrets was likely issued long ago and has
+        # already expired (Yahoo tokens last only 1 hour).  Setting the
+        # issued-at timestamp to 0 ensures _refresh_token_if_needed() will
+        # refresh immediately using the long-lived refresh token.
+        self._token_issued_at: float = 0.0
 
     # ── Construction helpers ──────────────────────────────────────────────────
 
