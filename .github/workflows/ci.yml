@@ -63,8 +63,8 @@ jobs:
       - name: Install deployment dependencies
         run: pip install rsconnect-python
 
-      - name: Write .env for shinyapps.io
-        run: echo "MOTHERDUCK_TOKEN=$MOTHERDUCK_TOKEN" > .env
+      - name: Write MotherDuck token for shinyapps.io
+        run: echo "MOTHERDUCK_TOKEN=$MOTHERDUCK_TOKEN" > _motherduck_env
         env:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
 
@@ -89,5 +89,5 @@ jobs:
 # Add these at: github.com/<owner>/<repo>/settings/secrets/actions
 #
 # NOTE: shinyapps.io does not support rsconnect's -E flag for env vars.
-# Instead, the deploy step writes a .env file from GitHub Secrets, which
-# is bundled into the deploy and loaded by python-dotenv at app startup.
+# The deploy step writes _motherduck_env (NOT .env, which is gitignored
+# and excluded from rsconnect bundles). python-dotenv loads it at startup.
