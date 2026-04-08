@@ -63,6 +63,11 @@ jobs:
       - name: Install deployment dependencies
         run: pip install rsconnect-python
 
+      - name: Write .env for shinyapps.io
+        run: echo "MOTHERDUCK_TOKEN=$MOTHERDUCK_TOKEN" > .env
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+
       - name: Deploy to shinyapps.io
         env:
           SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
@@ -76,15 +81,13 @@ jobs:
 # SHINYAPPS_ACCOUNT  — shinyapps.io account name (e.g. chris-selig)
 # SHINYAPPS_TOKEN    — shinyapps.io token (from shinyapps.io → Account → Tokens)
 # SHINYAPPS_SECRET   — shinyapps.io token secret
+# MOTHERDUCK_TOKEN   — MotherDuck access token (bundled into .env for shinyapps.io)
 #
 # The app reads my_team_key from config/league_settings.yaml — no Yahoo
 # credentials needed in the Shiny app.
 #
 # Add these at: github.com/<owner>/<repo>/settings/secrets/actions
 #
-# ── shinyapps.io Environment Variables (set in dashboard, NOT here) ──────────
-# rsconnect's -E flag does NOT work for shinyapps.io (only Posit Connect).
-# Set these directly in the shinyapps.io dashboard under:
-#   Application → Settings → Advanced → Environment Variables
-#
-# MOTHERDUCK_TOKEN   — MotherDuck access token (required for the app to read data)
+# NOTE: shinyapps.io does not support rsconnect's -E flag for env vars.
+# Instead, the deploy step writes a .env file from GitHub Secrets, which
+# is bundled into the deploy and loaded by python-dotenv at app startup.
