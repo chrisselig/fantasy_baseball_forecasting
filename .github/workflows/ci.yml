@@ -64,7 +64,15 @@ jobs:
         run: pip install rsconnect-python
 
       - name: Write MotherDuck token for shinyapps.io
-        run: echo "MOTHERDUCK_TOKEN=$MOTHERDUCK_TOKEN" > _motherduck_env
+        run: |
+          python3 -c "
+          import os
+          token = os.environ['MOTHERDUCK_TOKEN']
+          assert token, 'MOTHERDUCK_TOKEN secret is empty!'
+          with open('_deploy_config.py', 'w') as f:
+              f.write(f'MOTHERDUCK_TOKEN = \"{token}\"\n')
+          print(f'_deploy_config.py written ({len(token)} char token)')
+          "
         env:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
 
@@ -89,5 +97,6 @@ jobs:
 # Add these at: github.com/<owner>/<repo>/settings/secrets/actions
 #
 # NOTE: shinyapps.io does not support rsconnect's -E flag for env vars.
-# The deploy step writes _motherduck_env (NOT .env, which is gitignored
-# and excluded from rsconnect bundles). python-dotenv loads it at startup.
+# The deploy step writes _deploy_config.py (a Python module that sets the
+# token). This is imported by app.py before the Shiny app loads — more
+# reliable than dotenv file loading which can silently fail.
