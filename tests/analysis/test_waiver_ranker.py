@@ -430,3 +430,70 @@ def test_rank_free_agents_marks_callups(config: object) -> None:
     assert bool(callup_row["is_callup"]) is True
     assert callup_row["days_since_callup"] == 2
     assert bool(normal_row["is_callup"]) is False
+
+
+# ---------------------------------------------------------------------------
+# 7. rank_free_agents: output carries display metadata (name/team/position)
+# ---------------------------------------------------------------------------
+
+
+def test_rank_free_agents_preserves_metadata(config: object) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+    roster = _make_roster_df()
+    matchup = _make_matchup_df()
+    callups = pd.DataFrame(columns=["player_id", "days_since_callup"])
+
+    fa_row = _make_player_row("fa1", hr=2.0).to_dict()
+    fa_row["full_name"] = "Fresh Face"
+    fa_row["team"] = "NYY"
+    # Free agent df uses `positions` (Yahoo schema), not `eligible_positions`.
+    fa_row["positions"] = ["OF"]
+    free_agents = pd.DataFrame([fa_row])
+
+    result = rank_free_agents(free_agents, roster, matchup, callups, config)
+
+    assert not result.empty
+    row = result.iloc[0]
+    assert row["player_name"] == "Fresh Face"
+    assert row["team"] == "NYY"
+    assert "OF" in str(row["position"])
+    assert bool(row["is_pitcher"]) is False
+    assert "fit_score" in result.columns
+    # Carries per-game stats for display
+    assert "hr" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# 8. score_free_agent: pitchers don't get penalized for 0 hitting stats
+# ---------------------------------------------------------------------------
+
+
+def test_score_free_agent_pitcher_skips_hitting_cats(config: object) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+    roster = _make_roster_df()
+    matchup = _make_matchup_df()
+
+    pitcher = _make_player_row(
+        "fa_pitcher",
+        eligible_positions=["SP"],
+        h=0.0,
+        hr=0.0,
+        sb=0.0,
+        bb=0.0,
+        w=1.0,
+        k=7.0,
+        whip=1.05,
+        k_bb=3.0,
+        sv_h=0.0,
+    )
+
+    result = score_free_agent(pitcher, roster, matchup, config)
+    cat_scores = cast(dict[str, float], result["category_scores"])
+
+    # Hitting categories should all be 0 (pitcher skips them)
+    for hit_cat in ("h", "hr", "sb", "bb", "avg", "ops", "fpct"):
+        assert cat_scores.get(hit_cat, 0.0) == 0.0

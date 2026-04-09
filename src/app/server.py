@@ -29,7 +29,6 @@ from src.db.schema import (
     FACT_PROJECTIONS,
     FACT_ROSTERS,
     FACT_TRANSACTIONS,
-    FACT_WAIVER_SCORES,
 )
 
 logger = logging.getLogger(__name__)
@@ -560,41 +559,43 @@ def _load_roster() -> pd.DataFrame:
     return _empty_roster_df()
 
 
-def _load_waiver_data() -> pd.DataFrame:
-    """Load waiver wire rankings from MotherDuck with streak annotations."""
-    try:
-        with managed_connection() as conn:
-            df: pd.DataFrame = conn.execute(f"""
-                SELECT
-                    ROW_NUMBER() OVER (ORDER BY w.overall_score DESC) AS rank,
-                    p.player_id,
-                    p.full_name          AS player_name,
-                    p.team,
-                    array_to_string(p.positions, ',') AS position,
-                    w.overall_score      AS score,
-                    w.is_callup          AS callup,
-                    NULL                 AS from_level,
-                    w.days_since_callup
-                FROM {FACT_WAIVER_SCORES} w
-                JOIN {DIM_PLAYERS} p ON w.player_id = p.player_id
-                WHERE w.score_date = (
-                    SELECT MAX(score_date) FROM {FACT_WAIVER_SCORES}
-                    WHERE overall_score > 0
-                )
-                  AND w.overall_score > 0
-                ORDER BY w.overall_score DESC
-            """).fetchdf()
+def _waiver_df_from_report(report: dict[str, Any]) -> pd.DataFrame:
+    """Build the waiver wire DataFrame directly from the daily report.
 
-            if not df.empty:
-                daily_df = _load_recent_daily_stats()
-                if not daily_df.empty:
-                    df = annotate_with_streaks(df, daily_df)
-                elif "streak" not in df.columns:
-                    df["streak"] = "—"
-                return df
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load waiver data from DB: %s", exc)
-    return pd.DataFrame()
+    The pipeline computes full FA rankings (with names, positions, and
+    per-game stats) and embeds them in ``daily_report["waiver_rankings"]``.
+    Reading from the report avoids a second DB query and ensures the UI
+    is always consistent with the report's adds/drops section.
+    """
+    rankings = report.get("waiver_rankings") if isinstance(report, dict) else None
+    if not isinstance(rankings, list) or not rankings:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rankings)
+    if df.empty:
+        return df
+
+    # Sort by overall_score (should already be sorted, but be defensive).
+    if "overall_score" in df.columns:
+        df = df.sort_values("overall_score", ascending=False).reset_index(drop=True)
+
+    df.insert(0, "rank", range(1, len(df) + 1))
+    df["score"] = df.get("overall_score", 0.0)
+    df["callup"] = df.get("is_callup", False)
+    df["from_level"] = None
+
+    # Annotate streaks if we have recent daily stats.
+    try:
+        daily_df = _load_recent_daily_stats()
+        if not daily_df.empty:
+            df = annotate_with_streaks(df, daily_df)
+        else:
+            df["streak"] = "—"
+    except Exception as exc:
+        logger.warning("Streak annotation failed: %s", exc)
+        df["streak"] = "—"
+
+    return df
 
 
 def _load_transactions() -> pd.DataFrame:
@@ -747,7 +748,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     @reactive.calc
     def waiver_data() -> pd.DataFrame:
         _refresh_counter()
-        df = _load_waiver_data()
+        df = _waiver_df_from_report(daily_report())
+        if df.empty:
+            return df
         pos = str(input.position_filter())
         if pos and pos != "All":
             df = df[df["position"].str.contains(pos, na=False)]
@@ -1097,8 +1100,10 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             a: dict[str, Any] = item if isinstance(item, dict) else {}
             add_id = str(a.get("add_player_id", ""))
             drop_id = str(a.get("drop_player_id", ""))
-            add_name = id_to_name.get(add_id, add_id)
-            drop_name = id_to_name.get(drop_id, drop_id)
+            # Prefer the name stored in the add dict itself (set by the
+            # pipeline); fall back to the id→name lookup, then to the raw id.
+            add_name = str(a.get("add_name", "")) or id_to_name.get(add_id, add_id)
+            drop_name = str(a.get("drop_name", "")) or id_to_name.get(drop_id, drop_id)
             score = a.get("score", 0.0)
             cats = a.get("categories_improved", [])
             cat_labels = [
@@ -1785,20 +1790,35 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         df = waiver_data()
         if df.empty:
             return ui.p("No waiver wire data.", style="color:#888;padding:0.5rem;")
-        headers = ["#", "Player", "Team", "Pos", "Score ⓘ", "Streak", "Key Stats"]
+        headers = [
+            "#",
+            "Player",
+            "Team",
+            "Pos",
+            "Score",
+            "Fit",
+            "Streak",
+            "Key Stats",
+        ]
         rows_out: list[list[Any]] = []
         for _, r in df.iterrows():
             pos = str(r.get("position", ""))
-            is_p = any(p in pos.upper() for p in ("SP", "RP"))
+            is_p = bool(r.get("is_pitcher", False)) or any(
+                p in pos.upper() for p in ("SP", "RP")
+            )
             if is_p:
                 key_stats = (
-                    f"W:{r.get('w', '—')} K:{r.get('k', '—')} "
-                    f"WHIP:{r.get('whip', '—')} SV+H:{r.get('sv_h', '—')}"
+                    f"K:{_fmt_stat(r.get('k'), 'k')} "
+                    f"W:{_fmt_stat(r.get('w'), 'w')} "
+                    f"WHIP:{_fmt_stat(r.get('whip'), 'whip')} "
+                    f"SV+H:{_fmt_stat(r.get('sv_h'), 'sv_h')}"
                 )
             else:
                 key_stats = (
-                    f"AVG:{r.get('avg', '—')} OPS:{r.get('ops', '—')} "
-                    f"HR:{r.get('hr', '—')} SB:{r.get('sb', '—')}"
+                    f"AVG:{_fmt_stat(r.get('avg'), 'avg')} "
+                    f"OPS:{_fmt_stat(r.get('ops'), 'ops')} "
+                    f"HR:{_fmt_stat(r.get('hr'), 'hr')} "
+                    f"SB:{_fmt_stat(r.get('sb'), 'sb')}"
                 )
             callup_badge = (
                 ui.tags.span(
@@ -1809,6 +1829,11 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 if r.get("callup")
                 else ui.tags.span()
             )
+            score_val = float(r.get("score", 0) or 0)
+            fit_val = float(r.get("fit_score", 0) or 0)
+            fit_color = (
+                "#2e7d32" if fit_val >= 2.0 else "#e65100" if fit_val >= 0.5 else "#888"
+            )
             rows_out.append(
                 [
                     str(int(r.get("rank", 0))),
@@ -1816,8 +1841,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     str(r.get("team", "")),
                     pos,
                     ui.tags.span(
-                        f"{float(r.get('score', 0)):.1f}",
+                        f"{score_val:.1f}",
                         style="font-weight:700;color:#132747;",
+                    ),
+                    ui.tags.span(
+                        f"{fit_val:+.1f}",
+                        style=f"font-weight:700;color:{fit_color};",
                     ),
                     _streak_badge(str(r.get("streak", "—"))),
                     ui.tags.span(key_stats, style="font-size:0.73rem;color:#4a6282;"),

@@ -3,27 +3,55 @@ waiver_ranker.py
 
 Pure functions for ranking waiver wire pickups by expected matchup impact.
 All functions accept DataFrames, return DataFrames or dicts — no DB or API calls.
+
+Scoring model
+=============
+We use a **z-score value-above-replacement** approach, weighted by matchup
+category status. For each scoring category:
+
+    delta      = fa_per_game - drop_per_game    (inverted for "lowest" cats)
+    z          = delta / sigma_cat               (sigma_cat from my roster)
+    weighted_z = z * status_weight(cat)
+    overall    += weighted_z
+
+This normalizes across categories with very different magnitudes (e.g. HR ~1
+per game vs K ~7 per game), so no single category dominates. Flippable and
+toss-up categories receive higher weights so the ranker reflects *what the
+team actually needs to win this week*.
+
+A secondary **fit_score** sums only the contributions from flippable/toss-up
+categories — this is the "matchup-aware" score that should drive UI sorting
+when the user cares about closing category gaps.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pandas as pd
 
 from src.config import LeagueSettings
 
-# Status weight mapping for category scoring
+# Status weight mapping for category scoring.
+# Flippable and toss-up categories are weighted far higher than safe ones
+# because those are where roster moves actually change outcomes.
 _STATUS_WEIGHTS: dict[str, float] = {
-    "safe_win": 0.1,
-    "safe_loss": 0.1,
-    "toss_up": 1.0,
-    "flippable_win": 2.0,
-    "flippable_loss": 2.0,
+    "safe_win": 0.15,
+    "safe_loss": 0.15,
+    "toss_up": 1.5,
+    "flippable_win": 2.5,
+    "flippable_loss": 2.5,
 }
 
-# Map from category name to stat column in player rows
+# Categories where "lower is better" (rate stats where we want to minimize)
+_LOWER_BETTER: set[str] = {"whip"}
+
+# Pitcher position markers (used for is_pitcher classification)
+_PITCHER_POSITIONS: set[str] = {"SP", "RP", "P"}
+
+# Categories and the per-game columns they map to in player rows.
 _CAT_TO_STAT: dict[str, str] = {
     "h": "h",
     "hr": "hr",
@@ -39,6 +67,21 @@ _CAT_TO_STAT: dict[str, str] = {
     "sv_h": "sv_h",
 }
 
+# Display-ready key stat columns the UI expects to read off a ranked FA row.
+_DISPLAY_STAT_COLS: list[str] = [
+    "h",
+    "hr",
+    "sb",
+    "bb",
+    "avg",
+    "ops",
+    "w",
+    "k",
+    "whip",
+    "k_bb",
+    "sv_h",
+]
+
 
 def _get_stat_value(row: pd.Series[Any], cat: str) -> float:
     """Safely get a stat value from a row, defaulting to 0.0."""
@@ -47,8 +90,63 @@ def _get_stat_value(row: pd.Series[Any], cat: str) -> float:
         val = row[col]
         if pd.isna(val):
             return 0.0
-        return float(val)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return 0.0
     return 0.0
+
+
+def _is_pitcher(positions: Any) -> bool:
+    """Return True when the player's positions include SP/RP/P."""
+    if positions is None:
+        return False
+    if isinstance(positions, list):
+        return bool(set(positions) & _PITCHER_POSITIONS)
+    if isinstance(positions, str):
+        parts = [p.strip().upper() for p in positions.replace("/", ",").split(",")]
+        return bool(set(parts) & _PITCHER_POSITIONS)
+    return False
+
+
+def _positions_str(positions: Any) -> str:
+    """Render positions as a short comma-separated string."""
+    if positions is None:
+        return ""
+    if isinstance(positions, list):
+        return ",".join(str(p) for p in positions)
+    return str(positions)
+
+
+def _compute_category_sigmas(
+    roster_df: pd.DataFrame, categories: list[str]
+) -> dict[str, float]:
+    """Compute a per-category standard deviation from the active roster.
+
+    Uses the roster as a "replacement-level" reference population. A small
+    epsilon floor prevents division-by-zero for categories with no variance.
+    """
+    sigmas: dict[str, float] = {}
+    if roster_df.empty:
+        return dict.fromkeys(categories, 1.0)
+
+    for cat in categories:
+        col = _CAT_TO_STAT.get(cat, cat)
+        if col not in roster_df.columns:
+            sigmas[cat] = 1.0
+            continue
+        series = pd.to_numeric(roster_df[col], errors="coerce").dropna()
+        if series.empty:
+            sigmas[cat] = 1.0
+            continue
+        std = float(series.std(ddof=0))
+        if not math.isfinite(std) or std < 1e-6:
+            # No variance — fall back to mean (or 1.0) to keep the scale sensible.
+            mean_val = float(series.mean())
+            sigmas[cat] = max(abs(mean_val), 1.0)
+        else:
+            sigmas[cat] = std
+    return sigmas
 
 
 def score_free_agent(
@@ -56,39 +154,22 @@ def score_free_agent(
     my_roster_df: pd.DataFrame,
     matchup_df: pd.DataFrame,
     config: LeagueSettings,
+    sigmas: dict[str, float] | None = None,
 ) -> dict[str, object]:
     """Score a single free agent by expected matchup impact.
 
-    Args:
-        player_row: One row from the free_agents DataFrame. Must have player_id,
-                    position columns, and all category stat columns.
-        my_roster_df: Current roster. Must have player_id, position, and all
-                      category stat columns.
-        matchup_df: Output of score_categories(). Used to weight improvements
-                    in flippable categories higher.
-        config: LeagueSettings instance for win_direction and roster positions.
+    Returns dict with:
+        player_id, overall_score, fit_score, category_scores, recommended_drop_id
 
-    Returns:
-        {
-          "player_id": str,
-          "overall_score": float,
-          "category_scores": dict[str, float],   # JSON-serializable
-          "recommended_drop_id": str,
-        }
-
-    Scoring logic:
-        - For each category, estimate the delta if we add this player (drop weakest)
-        - Weight that delta by status: safe_win/safe_loss=0.1, toss_up=1.0,
-          flippable_win/flippable_loss=2.0
-        - For WHIP: lower delta is better (invert sign)
-        - Sum weighted deltas → overall_score
+    ``overall_score`` is the sum of weighted z-scores across all categories.
+    ``fit_score`` is the sum of contributions from flippable/toss-up categories
+    only — this is the matchup-aware "how much does this player help me win
+    the close categories" metric.
     """
     player_id = str(player_row.get("player_id", ""))
 
-    # Find who we'd drop
     recommended_drop_id = find_recommended_drop(player_row, my_roster_df, config)
 
-    # Build a status lookup from matchup_df
     status_lookup: dict[str, str] = {}
     if (
         not matchup_df.empty
@@ -98,17 +179,37 @@ def score_free_agent(
         for _, row in matchup_df.iterrows():
             status_lookup[str(row["category"])] = str(row["status"])
 
+    if sigmas is None:
+        sigmas = _compute_category_sigmas(my_roster_df, list(config.scoring_categories))
+
     category_scores: dict[str, float] = {}
     overall_score = 0.0
+    fit_score = 0.0
 
-    # For each scoring category, compute the delta from adding this player
+    # Pitcher/hitter awareness: don't penalize hitters for having 0 WHIP or
+    # pitchers for having 0 HR — only consider the categories relevant to
+    # the player's role.
+    player_is_pitcher = _is_pitcher(
+        player_row.get("eligible_positions", player_row.get("positions", []))
+    )
+    hitter_cats = {"h", "hr", "sb", "bb", "avg", "ops", "fpct"}
+    pitcher_cats = {"w", "k", "whip", "k_bb", "sv_h"}
+
     for cat in config.scoring_categories:
+        # Skip categories that don't apply to this player's role
+        if player_is_pitcher and cat in hitter_cats:
+            category_scores[cat] = 0.0
+            continue
+        if (not player_is_pitcher) and cat in pitcher_cats:
+            category_scores[cat] = 0.0
+            continue
+
         direction = config.category_win_direction.get(cat, "highest")
-        weight = _STATUS_WEIGHTS.get(status_lookup.get(cat, "toss_up"), 1.0)
+        status = status_lookup.get(cat, "toss_up")
+        weight = _STATUS_WEIGHTS.get(status, 1.0)
 
         player_val = _get_stat_value(player_row, cat)
 
-        # Compute what the dropped player contributed
         drop_val = 0.0
         if recommended_drop_id and not my_roster_df.empty:
             drop_rows = my_roster_df[my_roster_df["player_id"] == recommended_drop_id]
@@ -116,18 +217,22 @@ def score_free_agent(
                 drop_val = _get_stat_value(drop_rows.iloc[0], cat)
 
         delta = player_val - drop_val
-
-        # For WHIP: lower is better, so a negative delta (lower WHIP) is good
-        if direction == "lowest":
+        if direction == "lowest" or cat in _LOWER_BETTER:
             delta = -delta
 
-        weighted = delta * weight
+        sigma = sigmas.get(cat, 1.0) or 1.0
+        z = delta / sigma
+        weighted = z * weight
         category_scores[cat] = weighted
         overall_score += weighted
+
+        if status in ("flippable_win", "flippable_loss", "toss_up"):
+            fit_score += weighted
 
     return {
         "player_id": player_id,
         "overall_score": overall_score,
+        "fit_score": fit_score,
         "category_scores": category_scores,
         "recommended_drop_id": recommended_drop_id,
     }
@@ -140,59 +245,49 @@ def find_recommended_drop(
 ) -> str:
     """Find the best player to drop when adding the candidate.
 
-    Args:
-        candidate_player: The player being considered for add.
-                          Must have position eligibility info.
-        my_roster_df: Current roster with player_id, eligible_positions,
-                      overall_score, and stat columns.
-        config: LeagueSettings for position rules.
-
-    Returns:
-        player_id of the recommended drop. Must be positionally replaceable
-        (same position eligibility as candidate or BN-only player).
-        Never drops a player with games_remaining > 0 this week if there
-        is a BN-only alternative.
+    Priority:
+      1. Bench players with no games remaining (lowest overall_score first).
+      2. Bench players (lowest overall_score first).
+      3. Active players sharing the candidate's position eligibility.
+      4. Lowest-scoring player overall (last-resort fallback).
     """
     if my_roster_df.empty:
         return ""
 
     df = my_roster_df.copy()
 
-    # Get candidate positions
     candidate_positions: list[str] = []
+    ep: Any = None
     if "eligible_positions" in candidate_player.index:
         ep = candidate_player["eligible_positions"]
-        if isinstance(ep, list):
-            candidate_positions = ep
-        elif isinstance(ep, str):
-            candidate_positions = [p.strip() for p in ep.split(",")]
+    elif "positions" in candidate_player.index:
+        ep = candidate_player["positions"]
+    if isinstance(ep, list):
+        candidate_positions = ep
+    elif isinstance(ep, str):
+        candidate_positions = [p.strip() for p in ep.split(",")]
 
-    # Identify BN-only players (slot is BN and no active slot eligibility)
     bench_slots = set(config.bench_slots)
 
     def is_bench_only(row: pd.Series[Any]) -> bool:
         slot = str(row.get("slot", row.get("roster_slot", "")))
         return slot in bench_slots
 
-    # Separate bench-only from active players
     bench_candidates = df[df.apply(is_bench_only, axis=1)]
     active_candidates = df[~df.apply(is_bench_only, axis=1)]
 
-    # Prefer dropping BN-only players who have no games remaining
     if not bench_candidates.empty:
         if "games_remaining" in bench_candidates.columns:
             no_games = bench_candidates[
                 bench_candidates["games_remaining"].fillna(0) <= 0
             ]
             if not no_games.empty:
-                # Drop the bench player with the lowest overall_score
                 if "overall_score" in no_games.columns:
                     return str(
                         no_games.loc[no_games["overall_score"].idxmin(), "player_id"]
                     )
                 return str(no_games.iloc[0]["player_id"])
 
-        # All bench players are candidates; pick lowest score
         if "overall_score" in bench_candidates.columns:
             return str(
                 bench_candidates.loc[
@@ -201,7 +296,6 @@ def find_recommended_drop(
             )
         return str(bench_candidates.iloc[0]["player_id"])
 
-    # No bench-only players — consider active players at the same position
     if candidate_positions:
 
         def shares_position(row: pd.Series[Any]) -> bool:
@@ -220,7 +314,6 @@ def find_recommended_drop(
                 )
             return str(pos_matches.iloc[0]["player_id"])
 
-    # Fallback: drop lowest-scoring player overall
     if not df.empty:
         if "overall_score" in df.columns:
             return str(df.loc[df["overall_score"].idxmin(), "player_id"])
@@ -238,19 +331,18 @@ def rank_free_agents(
 ) -> pd.DataFrame:
     """Rank all available free agents by expected matchup impact.
 
-    Args:
-        free_agents_df: Available players with stats and projections.
-        my_roster_df: Current roster.
-        matchup_df: Output of score_categories().
-        callups_df: Recent call-ups. Columns: player_id, days_since_callup.
-        config: LeagueSettings.
-
-    Returns:
-        DataFrame sorted descending by overall_score with columns:
-          player_id, overall_score, category_scores (JSON string),
-          recommended_drop_id, is_callup (bool), days_since_callup (int, NaN if not callup)
+    Returns a DataFrame sorted descending by ``overall_score`` with columns:
+      player_id, player_name, team, position, is_pitcher,
+      overall_score, fit_score, category_scores (JSON string),
+      recommended_drop_id, is_callup, days_since_callup,
+      plus per-game stat columns for UI display (h, hr, sb, bb, avg, ops,
+      w, k, whip, k_bb, sv_h) carried over from free_agents_df.
     """
-    records = []
+    if free_agents_df.empty:
+        return pd.DataFrame()
+
+    # Precompute category sigmas once (stable across all FAs).
+    sigmas = _compute_category_sigmas(my_roster_df, list(config.scoring_categories))
 
     callup_ids: set[str] = set()
     callup_days: dict[str, int] = {}
@@ -260,22 +352,42 @@ def rank_free_agents(
             for _, row in callups_df.iterrows():
                 callup_days[str(row["player_id"])] = int(row["days_since_callup"])
 
+    records: list[dict[str, Any]] = []
     for _, player_row in free_agents_df.iterrows():
-        scored = score_free_agent(player_row, my_roster_df, matchup_df, config)
+        scored = score_free_agent(
+            player_row, my_roster_df, matchup_df, config, sigmas=sigmas
+        )
         pid = str(scored["player_id"])
         is_callup = pid in callup_ids
         days_since: int | float = callup_days.get(pid, float("nan"))
 
-        records.append(
-            {
-                "player_id": pid,
-                "overall_score": scored["overall_score"],
-                "category_scores": json.dumps(scored["category_scores"]),
-                "recommended_drop_id": scored["recommended_drop_id"],
-                "is_callup": is_callup,
-                "days_since_callup": days_since,
-            }
+        # `positions` is the Yahoo free_agents column; `eligible_positions`
+        # is the roster column — accept either.
+        raw_positions = player_row.get(
+            "eligible_positions", player_row.get("positions", [])
         )
+        rec: dict[str, Any] = {
+            "player_id": pid,
+            "player_name": str(
+                player_row.get("full_name", player_row.get("player_name", ""))
+            ),
+            "team": str(player_row.get("team", "")),
+            "position": _positions_str(raw_positions),
+            "is_pitcher": _is_pitcher(raw_positions),
+            "overall_score": scored["overall_score"],
+            "fit_score": scored["fit_score"],
+            "category_scores": json.dumps(scored["category_scores"]),
+            "recommended_drop_id": scored["recommended_drop_id"],
+            "is_callup": is_callup,
+            "days_since_callup": days_since,
+        }
+
+        # Carry over per-game display stats so the UI can render "Key Stats".
+        for col in _DISPLAY_STAT_COLS:
+            if col in player_row.index:
+                rec[col] = player_row[col]
+
+        records.append(rec)
 
     result = pd.DataFrame(records)
     if not result.empty:

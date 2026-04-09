@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import os
 import uuid
 from typing import Any
@@ -493,10 +494,27 @@ def _step_run_analysis(
     # ── 7. Callup alerts ──────────────────────────────────────────────────────
     callup_alerts = _build_callup_alerts(conn, fa_df)
 
-    # ── 8. Rank free agents ───────────────────────────────────────────────────
+    # ── 8. Enrich FA + roster with season per-game rates, then rank ───────────
+    season_start = datetime.date(season, 3, 1)
+    fa_ids: list[str] = (
+        fa_df["player_id"].astype(str).tolist()
+        if not fa_df.empty and "player_id" in fa_df.columns
+        else []
+    )
+    roster_ids: list[str] = (
+        my_roster_df["player_id"].astype(str).tolist()
+        if not my_roster_df.empty and "player_id" in my_roster_df.columns
+        else []
+    )
+    rates_df = _query_player_rates(
+        conn, list(set(fa_ids + roster_ids)), season_start, today
+    )
+    fa_enriched = _enrich_with_rates(fa_df, rates_df)
+    my_roster_enriched = _enrich_with_rates(my_roster_df, rates_df)
+
     callups_df = _query_callups(conn)
     ranked_fa_df = rank_free_agents(
-        fa_df, my_roster_df, matchup_df, callups_df, settings
+        fa_enriched, my_roster_enriched, matchup_df, callups_df, settings
     )
 
     # Write real waiver scores back (overwrite placeholder 0-scores)
@@ -509,9 +527,10 @@ def _step_run_analysis(
 
     # ── 10. Recommend adds ────────────────────────────────────────────────────
     acquisitions_used = _query_weekly_acquisitions(conn, team_key, today)
-    adds = recommend_adds(ranked_fa_df, my_roster_df, acquisitions_used, settings)
+    adds = recommend_adds(ranked_fa_df, my_roster_enriched, acquisitions_used, settings)
 
     # ── 11. Build daily report ────────────────────────────────────────────────
+    waiver_rankings = _serialize_waiver_rankings(ranked_fa_df)
     report = build_daily_report(
         lineup=lineup,
         adds=adds,
@@ -520,9 +539,72 @@ def _step_run_analysis(
         callup_alerts=callup_alerts,
         report_date=today,
         week_number=week,
+        waiver_rankings=waiver_rankings,
     )
 
     return report
+
+
+def _serialize_waiver_rankings(
+    ranked_df: pd.DataFrame, limit: int = 100
+) -> list[dict[str, object]]:
+    """Convert the ranked FA DataFrame to a JSON-serializable list.
+
+    Keeps only the fields the Shiny app renders: player info, scores,
+    and per-game rate stats. Truncates to ``limit`` rows.
+    """
+    if ranked_df.empty:
+        return []
+
+    keep_cols = [
+        "player_id",
+        "player_name",
+        "team",
+        "position",
+        "is_pitcher",
+        "overall_score",
+        "fit_score",
+        "recommended_drop_id",
+        "is_callup",
+        "days_since_callup",
+        "h",
+        "hr",
+        "sb",
+        "bb",
+        "avg",
+        "ops",
+        "w",
+        "k",
+        "whip",
+        "k_bb",
+        "sv_h",
+    ]
+    present = [c for c in keep_cols if c in ranked_df.columns]
+    df = ranked_df[present].head(limit).copy()
+
+    # Replace NaN with None so json.dumps works cleanly.
+    records: list[dict[str, object]] = []
+    for _, row in df.iterrows():
+        rec: dict[str, object] = {}
+        for col in present:
+            val = row[col]
+            if isinstance(val, float) and not math.isfinite(val):
+                rec[col] = None
+            elif pd.isna(val):
+                rec[col] = None
+            else:
+                rec[col] = (
+                    float(val)
+                    if isinstance(val, (int, float))
+                    and col not in ("days_since_callup",)
+                    else (
+                        int(val)
+                        if col == "days_since_callup" and pd.notna(val)
+                        else val
+                    )
+                )
+        records.append(rec)
+    return records
 
 
 def _step_write_daily_report(
@@ -669,6 +751,162 @@ def _query_my_roster(
             ]
         )
     return df
+
+
+def _query_player_rates(
+    conn: duckdb.DuckDBPyConnection,
+    player_ids: list[str],
+    season_start: datetime.date,
+    today: datetime.date,
+) -> pd.DataFrame:
+    """Return per-game rate stats for a set of players (season-to-date).
+
+    Used to enrich both free agents and the user's roster with realistic
+    per-game production numbers so the waiver ranker can compare apples
+    to apples. Rate stats (avg, ops, whip, k_bb, fpct) are recomputed
+    from aggregated components.
+
+    Args:
+        conn: Open DuckDB connection.
+        player_ids: List of Yahoo player_ids to query.
+        season_start: Earliest stat_date to include (e.g. April 1).
+        today: Inclusive upper bound (stats through yesterday are used).
+
+    Returns:
+        DataFrame with columns: player_id, games_played (int), and per-game
+        rate columns h, hr, sb, bb, avg, ops, fpct, w, k, whip, k_bb, sv_h.
+        Empty DataFrame if no data.
+    """
+    cols = [
+        "player_id",
+        "games_played",
+        "h",
+        "hr",
+        "sb",
+        "bb",
+        "avg",
+        "ops",
+        "fpct",
+        "w",
+        "k",
+        "whip",
+        "k_bb",
+        "sv_h",
+    ]
+    if not player_ids:
+        return pd.DataFrame(columns=cols)
+
+    placeholders = ", ".join(["?" for _ in player_ids])
+    try:
+        raw: pd.DataFrame = conn.execute(
+            f"""
+            SELECT
+                player_id,
+                COUNT(DISTINCT stat_date) AS games_played,
+                SUM(COALESCE(ab, 0))            AS ab_sum,
+                SUM(COALESCE(h, 0))             AS h_sum,
+                SUM(COALESCE(hr, 0))            AS hr_sum,
+                SUM(COALESCE(sb, 0))            AS sb_sum,
+                SUM(COALESCE(bb, 0))            AS bb_sum,
+                SUM(COALESCE(hbp, 0))           AS hbp_sum,
+                SUM(COALESCE(sf, 0))            AS sf_sum,
+                SUM(COALESCE(tb, 0))            AS tb_sum,
+                SUM(COALESCE(errors, 0))        AS errors_sum,
+                SUM(COALESCE(chances, 0))       AS chances_sum,
+                SUM(COALESCE(ip, 0))            AS ip_sum,
+                SUM(COALESCE(w, 0))             AS w_sum,
+                SUM(COALESCE(k, 0))             AS k_sum,
+                SUM(COALESCE(walks_allowed, 0)) AS walks_allowed_sum,
+                SUM(COALESCE(hits_allowed, 0))  AS hits_allowed_sum,
+                SUM(COALESCE(sv, 0))            AS sv_sum,
+                SUM(COALESCE(holds, 0))         AS holds_sum
+            FROM {FACT_PLAYER_STATS_DAILY}
+            WHERE player_id IN ({placeholders})
+              AND stat_date >= ?
+              AND stat_date < ?
+            GROUP BY player_id
+        """,
+            player_ids + [season_start, today],
+        ).fetchdf()
+    except duckdb.Error as exc:
+        logger.warning("Player rates query failed: %s", exc)
+        return pd.DataFrame(columns=cols)
+
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+
+    games = raw["games_played"].clip(lower=1)
+    out = pd.DataFrame({"player_id": raw["player_id"]})
+    out["games_played"] = raw["games_played"].astype(int)
+
+    # Per-game counting-stat rates
+    out["h"] = raw["h_sum"] / games
+    out["hr"] = raw["hr_sum"] / games
+    out["sb"] = raw["sb_sum"] / games
+    out["bb"] = raw["bb_sum"] / games
+    out["w"] = raw["w_sum"] / games
+    out["k"] = raw["k_sum"] / games
+    out["sv_h"] = (raw["sv_sum"] + raw["holds_sum"]) / games
+
+    # Rate stats computed from aggregated components
+    ab = raw["ab_sum"]
+    out["avg"] = (raw["h_sum"] / ab).where(ab > 0, 0.0)
+    obp_num = raw["h_sum"] + raw["bb_sum"] + raw["hbp_sum"]
+    obp_denom = raw["ab_sum"] + raw["bb_sum"] + raw["hbp_sum"] + raw["sf_sum"]
+    obp = (obp_num / obp_denom).where(obp_denom > 0, 0.0)
+    slg = (raw["tb_sum"] / ab).where(ab > 0, 0.0)
+    out["ops"] = obp + slg
+    chances = raw["chances_sum"]
+    out["fpct"] = ((chances - raw["errors_sum"]) / chances).where(chances > 0, 0.0)
+    ip = raw["ip_sum"]
+    out["whip"] = ((raw["walks_allowed_sum"] + raw["hits_allowed_sum"]) / ip).where(
+        ip > 0, 0.0
+    )
+    walks = raw["walks_allowed_sum"]
+    out["k_bb"] = (raw["k_sum"] / walks).where(walks > 0, 0.0)
+
+    return out[cols]
+
+
+def _enrich_with_rates(
+    players_df: pd.DataFrame, rates_df: pd.DataFrame
+) -> pd.DataFrame:
+    """Left-join per-game rate columns onto a players DataFrame.
+
+    Missing players (no stats yet) get zeros so scoring still works.
+    """
+    if players_df.empty:
+        return players_df
+
+    rate_cols = [
+        "h",
+        "hr",
+        "sb",
+        "bb",
+        "avg",
+        "ops",
+        "fpct",
+        "w",
+        "k",
+        "whip",
+        "k_bb",
+        "sv_h",
+    ]
+
+    # Drop rate columns if they already exist so the merge is clean.
+    to_drop = [c for c in rate_cols if c in players_df.columns]
+    base = players_df.drop(columns=to_drop) if to_drop else players_df
+
+    if rates_df.empty:
+        out = base.copy()
+        for c in rate_cols:
+            out[c] = 0.0
+        return out
+
+    merged = base.merge(rates_df[["player_id"] + rate_cols], on="player_id", how="left")
+    for c in rate_cols:
+        merged[c] = merged[c].fillna(0.0)
+    return merged
 
 
 def _query_opponent_team_key(

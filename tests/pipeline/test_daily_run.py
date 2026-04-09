@@ -728,3 +728,126 @@ def test_main_exit_code_failed():
     result = {"run_id": "run-y", "status": "failed", "rows_written": {}}
     expected_exit = 0 if result["status"] != "failed" else 1
     assert expected_exit == 1
+
+
+# ── _query_player_rates / _enrich_with_rates ──────────────────────────────────
+
+
+def test_query_player_rates_computes_per_game_rates(conn):
+    """Season-to-date SUM is divided by number of game days → per-game rate."""
+    from src.pipeline.daily_run import _query_player_rates
+
+    # Insert 5 game days for player "p1": 10 H, 2 HR total → 2.0 H/G, 0.4 HR/G
+    rows = [
+        {
+            "player_id": "p1",
+            "stat_date": datetime.date(2026, 4, 1) + datetime.timedelta(days=i),
+            "ab": 4,
+            "h": 2,
+            "hr": 0 if i < 3 else 1,
+            "sb": 0,
+            "bb": 0,
+            "hbp": 0,
+            "sf": 0,
+            "tb": 2,
+            "errors": 0,
+            "chances": 0,
+            "ip": 0.0,
+            "w": 0,
+            "k": 0,
+            "walks_allowed": 0,
+            "hits_allowed": 0,
+            "sv": 0,
+            "holds": 0,
+        }
+        for i in range(5)
+    ]
+    df = pd.DataFrame(rows)
+    conn.register("_t", df)
+    conn.execute(
+        """
+        INSERT INTO fact_player_stats_daily
+            (player_id, stat_date, ab, h, hr, sb, bb, hbp, sf, tb,
+             errors, chances, ip, w, k, walks_allowed, hits_allowed, sv, holds)
+        SELECT player_id, stat_date, ab, h, hr, sb, bb, hbp, sf, tb,
+               errors, chances, ip, w, k, walks_allowed, hits_allowed, sv, holds
+        FROM _t
+        """
+    )
+    conn.unregister("_t")
+
+    rates = _query_player_rates(
+        conn,
+        ["p1"],
+        datetime.date(2026, 3, 1),
+        datetime.date(2026, 5, 1),
+    )
+    assert len(rates) == 1
+    row = rates.iloc[0]
+    assert row["games_played"] == 5
+    assert abs(row["h"] - 2.0) < 1e-6
+    assert abs(row["hr"] - 0.4) < 1e-6
+    # AVG = 10 H / 20 AB = 0.500
+    assert abs(row["avg"] - 0.5) < 1e-6
+
+
+def test_enrich_with_rates_fills_missing_with_zero():
+    from src.pipeline.daily_run import _enrich_with_rates
+
+    players = pd.DataFrame(
+        [{"player_id": "a"}, {"player_id": "b"}],
+    )
+    rates = pd.DataFrame(
+        [
+            {
+                "player_id": "a",
+                "h": 1.5,
+                "hr": 0.3,
+                "sb": 0.1,
+                "bb": 0.8,
+                "avg": 0.28,
+                "ops": 0.82,
+                "fpct": 0.99,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    out = _enrich_with_rates(players, rates)
+    a_row = out[out["player_id"] == "a"].iloc[0]
+    b_row = out[out["player_id"] == "b"].iloc[0]
+    assert abs(a_row["h"] - 1.5) < 1e-6
+    assert b_row["h"] == 0.0
+    assert b_row["whip"] == 0.0
+
+
+def test_serialize_waiver_rankings_handles_nan():
+    from src.pipeline.daily_run import _serialize_waiver_rankings
+
+    df = pd.DataFrame(
+        [
+            {
+                "player_id": "a",
+                "player_name": "Alice",
+                "team": "NYY",
+                "position": "OF",
+                "is_pitcher": False,
+                "overall_score": 5.0,
+                "fit_score": 2.0,
+                "recommended_drop_id": "x",
+                "is_callup": False,
+                "days_since_callup": float("nan"),
+                "hr": 1.2,
+                "h": float("nan"),
+            }
+        ]
+    )
+    out = _serialize_waiver_rankings(df)
+    assert len(out) == 1
+    # NaN should round-trip to None (JSON-serializable)
+    assert out[0]["h"] is None
+    assert out[0]["days_since_callup"] is None
+    json.dumps(out)  # must not raise

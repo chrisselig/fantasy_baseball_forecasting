@@ -66,11 +66,35 @@ def test_load_roster_returns_dataframe() -> None:
     assert isinstance(df, pd.DataFrame)
 
 
-def test_load_waiver_data_returns_dataframe() -> None:
-    from src.app.server import _load_waiver_data
+def test_waiver_df_from_report_returns_dataframe() -> None:
+    from src.app.server import _waiver_df_from_report
 
-    df = _load_waiver_data()
+    # Empty report → empty DataFrame
+    df = _waiver_df_from_report({})
     assert isinstance(df, pd.DataFrame)
+    assert df.empty
+
+    # Report with rankings → DataFrame with rank + score columns
+    report = {
+        "waiver_rankings": [
+            {
+                "player_id": "422.p.1",
+                "player_name": "Test Player",
+                "team": "NYY",
+                "position": "OF",
+                "is_pitcher": False,
+                "overall_score": 5.0,
+                "fit_score": 2.0,
+                "is_callup": False,
+                "hr": 1.2,
+            }
+        ]
+    }
+    df2 = _waiver_df_from_report(report)
+    assert isinstance(df2, pd.DataFrame)
+    assert not df2.empty
+    assert "rank" in df2.columns
+    assert "score" in df2.columns
 
 
 def test_app_can_be_imported() -> None:
