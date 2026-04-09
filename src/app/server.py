@@ -165,8 +165,24 @@ def _stat_box(title: str, value: str, sub: str = "", color: str = "#1a7fa1") -> 
     )
 
 
-def _fmt_stat(v: Any) -> str:
-    """Format a stat value for display. Returns '—' for None/NaN."""
+# Categories that should display as integers (no decimal places).
+_INTEGER_CATS: set[str] = {"h", "hr", "sb", "bb", "w", "k", "sv_h"}
+
+# Categories that should display with exactly 2 decimal places.
+_TWO_DECIMAL_CATS: set[str] = {"whip", "k_bb"}
+
+# Categories that should display with exactly 3 decimal places.
+_THREE_DECIMAL_CATS: set[str] = {"avg", "ops", "fpct"}
+
+
+def _fmt_stat(v: Any, cat: str = "") -> str:
+    """Format a stat value for display. Returns '—' for None/NaN.
+
+    Args:
+        v: The stat value to format.
+        cat: Lowercase category key (e.g. "hr", "whip", "avg").
+             When provided, formatting is category-aware.
+    """
     if v is None:
         return "—"
     if isinstance(v, float):
@@ -174,6 +190,14 @@ def _fmt_stat(v: Any) -> str:
 
         if math.isnan(v):
             return "—"
+        cat_lower = cat.lower()
+        if cat_lower in _INTEGER_CATS:
+            return str(int(round(v)))
+        if cat_lower in _TWO_DECIMAL_CATS:
+            return f"{v:.2f}"
+        if cat_lower in _THREE_DECIMAL_CATS:
+            return f"{v:.3f}"
+        # Fallback: 3 decimals for small values, integer for large
         return f"{v:.3f}" if v < 10 else str(int(v))
     return str(v)
 
@@ -858,10 +882,10 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             rows.append(
                 [
                     cat_label,
-                    _fmt_stat(my_actual),
-                    _fmt_stat(opp_actual),
-                    _fmt_stat(r.get("my_value", "")),
-                    _fmt_stat(r.get("opp_value", "")),
+                    _fmt_stat(my_actual, cat),
+                    _fmt_stat(opp_actual, cat),
+                    _fmt_stat(r.get("my_value", ""), cat),
+                    _fmt_stat(r.get("opp_value", ""), cat),
                     ui.tags.span(
                         f"{win_prob * 100:.0f}%",
                         class_=_win_pct_class(win_prob),
@@ -956,12 +980,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
 
                 if _math.isnan(fval):
                     continue
-                if key in ("proj_avg", "proj_ops", "proj_whip", "proj_fpct"):
-                    display = f"{fval:.3f}"
-                elif key == "proj_k_bb":
-                    display = f"{fval:.2f}"
-                else:
-                    display = str(int(round(fval)))
+                # Extract category key from projection key (e.g. "proj_avg" → "avg")
+                cat_key = key.removeprefix("proj_")
+                display = _fmt_stat(fval, cat_key)
                 boxes.append(
                     ui.tags.span(
                         ui.tags.span(
@@ -1147,8 +1168,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             rows.append(
                 [
                     cat_label,
-                    _fmt_stat(r.get("my_value", "")),
-                    _fmt_stat(r.get("opp_value", "")),
+                    _fmt_stat(r.get("my_value", ""), cat),
+                    _fmt_stat(r.get("opp_value", ""), cat),
                     ui.tags.span("▲ Yes", style="color:#2e7d32;font-weight:700;")
                     if leading
                     else ui.tags.span("▼ No", style="color:#c62828;font-weight:700;"),
@@ -1207,8 +1228,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             flip_rows.append(
                 [
                     cat_label,
-                    f"{'▲' if leading else '▼'} {_fmt_stat(r.get('my_value', ''))}",
-                    _fmt_stat(r.get("opp_value", "")),
+                    f"{'▲' if leading else '▼'} {_fmt_stat(r.get('my_value', ''), cat)}",
+                    _fmt_stat(r.get("opp_value", ""), cat),
                     ui.tags.span(f"{wp * 100:.0f}%", class_=_win_pct_class(wp)),
                     ui.tags.span(
                         delta_str,
@@ -1340,12 +1361,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     str(r.get("slot", "")),
                     str(r.get("player_name", "")),
                     str(r.get("position", "")),
-                    _safe_count(r.get("h")),
-                    _safe_count(r.get("hr")),
-                    _safe_count(r.get("sb")),
-                    _safe_count(r.get("bb")),
-                    _fmt_stat(r.get("avg")),
-                    _fmt_stat(r.get("ops")),
+                    _fmt_stat(r.get("h"), "h"),
+                    _fmt_stat(r.get("hr"), "hr"),
+                    _fmt_stat(r.get("sb"), "sb"),
+                    _fmt_stat(r.get("bb"), "bb"),
+                    _fmt_stat(r.get("avg"), "avg"),
+                    _fmt_stat(r.get("ops"), "ops"),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
@@ -1375,14 +1396,14 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     str(r.get("slot", "")),
                     str(r.get("player_name", "")),
                     str(r.get("position", "")),
-                    str(r.get("w", "—")),
-                    str(r.get("k", "—")),
+                    _fmt_stat(r.get("w", "—"), "w"),
+                    _fmt_stat(r.get("k", "—"), "k"),
                     ui.tags.span(
-                        _fmt_stat(whip_val) if whip_val else "—",
+                        _fmt_stat(whip_val, "whip") if whip_val else "—",
                         style=f"color:{whip_color};font-weight:600;",
                     ),
-                    _fmt_stat(r.get("k_bb", 0.0)),
-                    str(r.get("sv_h", "—")),
+                    _fmt_stat(r.get("k_bb", 0.0), "k_bb"),
+                    _fmt_stat(r.get("sv_h", "—"), "sv_h"),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
