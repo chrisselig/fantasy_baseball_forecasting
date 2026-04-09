@@ -591,6 +591,30 @@ def _parse_all_rosters_response(data: dict[str, Any], week: int) -> pd.DataFrame
     return pd.concat(frames, ignore_index=True)
 
 
+def _find_teams_in_matchup(matchup: dict[str, Any]) -> Any:
+    """Locate the ``teams`` value in a Yahoo matchup dict.
+
+    Yahoo may nest teams in several ways:
+    * ``matchup["teams"]``               — direct
+    * ``matchup["0"]["teams"]``          — inside a numeric key
+    * ``matchup["matchup_grades"]``      — alternate name (rare)
+
+    Returns the raw teams value (dict, list, or ``{}`` if not found).
+    """
+    # Direct key
+    if "teams" in matchup:
+        return matchup["teams"]
+
+    # Numeric keys (Yahoo often nests data under "0", "1", etc.)
+    for key in matchup:
+        if key.isdigit():
+            inner = matchup[key]
+            if isinstance(inner, dict) and "teams" in inner:
+                return inner["teams"]
+
+    return {}
+
+
 def _build_matchup_row(
     matchup: dict[str, Any], league_id: int
 ) -> dict[str, Any] | None:
@@ -601,7 +625,7 @@ def _build_matchup_row(
     week_number = int(matchup.get("week", 0))
     season = int(matchup.get("week_start", "2026-01-01")[:4])
 
-    teams_data = matchup.get("teams", {})
+    teams_data = _find_teams_in_matchup(matchup)
     team_items = _extract_team_items(teams_data)
 
     team_keys: list[str] = []
@@ -736,17 +760,24 @@ def _parse_scoreboard_response(data: dict[str, Any], league_key: str) -> pd.Data
             if row:
                 rows.append(row)
             elif not rows:
-                # Log structure of first failing entry for diagnostics
-                logger.info(
-                    "Scoreboard matchup entry %s structure: "
-                    "matchup_keys=%s, teams_type=%s, teams_keys=%s",
+                # Log full structure of first failing entry for diagnostics
+                all_keys = list(matchup.keys())
+                teams_found = _find_teams_in_matchup(matchup)
+                logger.warning(
+                    "Scoreboard matchup entry %s failed. "
+                    "ALL matchup keys=%s, "
+                    "teams_found_type=%s, teams_found_keys=%s",
                     _k,
-                    list(matchup.keys())[:8],
-                    type(matchup.get("teams", {}).__class__.__name__),
+                    all_keys,
+                    type(teams_found).__name__,
                     (
-                        list(matchup.get("teams", {}).keys())[:5]
-                        if isinstance(matchup.get("teams"), dict)
-                        else "n/a"
+                        list(teams_found.keys())[:5]
+                        if isinstance(teams_found, dict)
+                        else (
+                            f"len={len(teams_found)}"
+                            if isinstance(teams_found, list)
+                            else "n/a"
+                        )
                     ),
                 )
 
