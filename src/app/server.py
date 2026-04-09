@@ -89,6 +89,19 @@ _STATUS_LABEL: dict[str, str] = {
 
 _PITCHER_SLOTS = frozenset({"SP", "SP1", "SP2", "RP", "RP1", "RP2", "P", "P1", "P2"})
 
+
+def _roster_slot_order(slot: Any) -> int:
+    """Sort key so active slots appear first, then BN, then IL/NA."""
+    s = str(slot).strip().upper()
+    if s in {"BN", "BENCH"}:
+        return 1
+    if s.startswith("IL"):
+        return 2
+    if s in {"NA", "N/A"}:
+        return 3
+    return 0
+
+
 _TRANSACTION_TYPE_LABELS: dict[str, tuple[str, str]] = {
     "mlb_injury": ("🩹 Injury", "#c62828"),
     "mlb_activation": ("✅ Activation", "#2e7d32"),
@@ -1970,9 +1983,14 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         df = roster_data()
         if df.empty:
             return ui.p("No roster data.", style="color:#888;")
-        hitters = df[~df["slot"].isin(_PITCHER_SLOTS)].copy()
+        is_pitcher_mask = df["position"].apply(lambda p: _position_is_pitcher(str(p)))
+        hitters = df[~is_pitcher_mask].copy()
         if hitters.empty:
             return ui.p("No hitters found.", style="color:#888;")
+        hitters["_slot_order"] = hitters["slot"].apply(_roster_slot_order)
+        hitters = hitters.sort_values(
+            by=["_slot_order", "slot", "player_name"], kind="stable"
+        )
         headers = [
             "Slot",
             "Player",
@@ -2008,9 +2026,14 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         df = roster_data()
         if df.empty:
             return ui.p("No roster data.", style="color:#888;")
-        pitchers = df[df["slot"].isin(_PITCHER_SLOTS)].copy()
+        is_pitcher_mask = df["position"].apply(lambda p: _position_is_pitcher(str(p)))
+        pitchers = df[is_pitcher_mask].copy()
         if pitchers.empty:
             return ui.p("No pitchers found.", style="color:#888;")
+        pitchers["_slot_order"] = pitchers["slot"].apply(_roster_slot_order)
+        pitchers = pitchers.sort_values(
+            by=["_slot_order", "slot", "player_name"], kind="stable"
+        )
         headers = ["Slot", "Player", "Pos", "W", "K", "WHIP", "K/BB", "SV+H", "Streak"]
         rows_out: list[list[Any]] = []
         for _, r in pitchers.iterrows():
