@@ -47,7 +47,7 @@ from src.analysis.matchup_analyzer import (
 )
 from src.analysis.waiver_ranker import rank_free_agents
 from src.api import mlb_client
-from src.api.yahoo_client import YahooClient
+from src.api.yahoo_client import YahooClient, set_stat_id_mapping
 from src.config import LeagueSettings
 from src.db.loaders_mlb import (
     get_fantasy_week,
@@ -159,6 +159,14 @@ def _step_load_yahoo(
     """
     yahoo = YahooClient.from_env()
     row_counts: dict[str, int] = {}
+
+    # Fetch league stat categories to build dynamic stat ID mapping
+    try:
+        categories = yahoo.get_stat_categories()
+        if categories:
+            set_stat_id_mapping(categories)
+    except Exception as exc:
+        logger.warning("Failed to fetch stat categories (non-fatal): %s", exc)
 
     # My roster
     my_roster_df = yahoo.get_my_roster(week)

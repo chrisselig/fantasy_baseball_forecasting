@@ -26,6 +26,7 @@ from src.api.yahoo_client import (
     _parse_scoreboard_response,
     _parse_standings_response,
     _parse_transactions_response,
+    set_stat_id_mapping,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -470,6 +471,11 @@ def _scoreboard_json() -> dict:  # type: ignore[type-arg]
 
 
 class TestGetCurrentMatchup:
+    @pytest.fixture(autouse=True)
+    def _setup_stat_mapping(self) -> None:
+        """Set up stat ID mapping matching the test fixture's stat IDs."""
+        set_stat_id_mapping({"7": "H", "12": "HR", "28": "W", "42": "K", "48": "WHIP"})
+
     @responses_lib.activate
     def test_returns_dataframe_with_correct_columns(
         self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
@@ -529,6 +535,96 @@ class TestGetCurrentMatchup:
         assert len(df) == 1
         assert df.iloc[0]["team_id_home"] == "423.l.87941.t.1"
         assert df.iloc[0]["team_id_away"] == "423.l.87941.t.2"
+
+
+# ── stat categories / mapping tests ───────────────────────────────────────────
+
+
+def _settings_json() -> dict:  # type: ignore[type-arg]
+    """Minimal Yahoo league settings response with stat categories."""
+    return {
+        "fantasy_content": {
+            "league": [
+                [{"league_key": "423.l.87941"}],
+                {
+                    "settings": {
+                        "stat_categories": {
+                            "stats": [
+                                {"stat": {"stat_id": "60", "display_name": "H"}},
+                                {"stat": {"stat_id": "12", "display_name": "HR"}},
+                                {"stat": {"stat_id": "16", "display_name": "SB"}},
+                                {"stat": {"stat_id": "18", "display_name": "BB"}},
+                                {"stat": {"stat_id": "3", "display_name": "AVG"}},
+                                {"stat": {"stat_id": "55", "display_name": "OPS"}},
+                                {"stat": {"stat_id": "61", "display_name": "FPCT"}},
+                                {"stat": {"stat_id": "28", "display_name": "W"}},
+                                {"stat": {"stat_id": "42", "display_name": "K"}},
+                                {"stat": {"stat_id": "26", "display_name": "WHIP"}},
+                                {"stat": {"stat_id": "58", "display_name": "K/BB"}},
+                                {"stat": {"stat_id": "57", "display_name": "SV+H"}},
+                            ]
+                        }
+                    }
+                },
+            ]
+        }
+    }
+
+
+class TestGetStatCategories:
+    @responses_lib.activate
+    def test_returns_stat_id_mapping(
+        self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("YAHOO_LEAGUE_ID", "87941")
+
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "league/423.l.87941/settings",
+            status=200,
+            json=_settings_json(),
+        )
+
+        categories = client.get_stat_categories()
+        assert categories["60"] == "H"
+        assert categories["12"] == "HR"
+        assert categories["26"] == "WHIP"
+        assert categories["57"] == "SV+H"
+
+    @responses_lib.activate
+    def test_caches_result(
+        self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("YAHOO_LEAGUE_ID", "87941")
+
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "league/423.l.87941/settings",
+            status=200,
+            json=_settings_json(),
+        )
+
+        result1 = client.get_stat_categories()
+        result2 = client.get_stat_categories()
+        assert result1 is result2
+
+
+class TestSetStatIdMapping:
+    def test_builds_column_mapping(self) -> None:
+        from src.api.yahoo_client import _stat_id_to_column
+
+        set_stat_id_mapping({"60": "H", "12": "HR", "26": "WHIP", "57": "SV+H"})
+        assert _stat_id_to_column["60"] == "h"
+        assert _stat_id_to_column["12"] == "hr"
+        assert _stat_id_to_column["26"] == "whip"
+        assert _stat_id_to_column["57"] == "sv_h"
+
+    def test_ignores_unknown_display_names(self) -> None:
+        from src.api.yahoo_client import _stat_id_to_column
+
+        set_stat_id_mapping({"99": "UNKNOWN_STAT", "12": "HR"})
+        assert "99" not in _stat_id_to_column
+        assert _stat_id_to_column["12"] == "hr"
 
 
 # ── get_free_agents tests ─────────────────────────────────────────────────────
@@ -869,6 +965,7 @@ class TestParsers:
         assert "matchup_id" in df.columns
 
     def test_parse_scoreboard_response_parses_matchup(self) -> None:
+        set_stat_id_mapping({"7": "H", "12": "HR", "28": "W", "42": "K", "48": "WHIP"})
         df = _parse_scoreboard_response(_scoreboard_json(), league_key="423.l.87941")
         assert len(df) == 1
         assert df.iloc[0]["team_id_home"] == "423.l.87941.t.1"
