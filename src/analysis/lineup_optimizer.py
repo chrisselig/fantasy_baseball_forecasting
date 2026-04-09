@@ -201,8 +201,31 @@ def _lookup_position(player_id: str, df: pd.DataFrame) -> str:
     rows = df[df["player_id"] == player_id]
     if rows.empty:
         return ""
-    pos = rows.iloc[0].get("position", "")
-    return str(pos) if pos and not (isinstance(pos, float)) else ""
+    # Prefer "position" column; fall back to "eligible_positions" (list or str).
+    for col in ("position", "eligible_positions"):
+        if col not in rows.columns:
+            continue
+        pos = rows.iloc[0].get(col, "")
+        if isinstance(pos, list):
+            return ",".join(str(p) for p in pos) if pos else ""
+        if pos and not isinstance(pos, float):
+            return str(pos)
+    return ""
+
+
+def _lookup_name(player_id: str, df: pd.DataFrame) -> str:
+    """Return the player_name/full_name for a player from a DataFrame, or '' if absent."""
+    if df.empty or "player_id" not in df.columns:
+        return ""
+    rows = df[df["player_id"] == player_id]
+    if rows.empty:
+        return ""
+    for col in ("player_name", "full_name"):
+        if col in rows.columns:
+            name = rows.iloc[0].get(col, "")
+            if name and not (isinstance(name, float) and pd.isna(name)):
+                return str(name)
+    return ""
 
 
 def _build_matchup_context(
@@ -313,20 +336,29 @@ def recommend_adds(
         add_id = str(row.get("player_id", ""))
         drop_id = str(row.get("recommended_drop_id", ""))
         score = float(row.get("overall_score", 0.0))
+        fit_score = float(row.get("fit_score", 0.0))
 
         if not add_id or not drop_id:
             continue
         if drop_id in used_drop_ids:
             continue
 
-        # Parse categories_improved from category_scores JSON
+        # Parse categories_improved from category_scores JSON.
+        # Prefer categories that are flippable/toss-up (bigger weighted_z
+        # values) — take the top contributors by score.
         categories_improved: list[str] = []
         cat_scores_raw = row.get("category_scores", "{}")
         try:
             cat_scores: dict[str, float] = json.loads(str(cat_scores_raw))
-            categories_improved = [c for c, v in cat_scores.items() if v > 0]
+            positive = [(c, v) for c, v in cat_scores.items() if v > 0]
+            positive.sort(key=lambda kv: kv[1], reverse=True)
+            categories_improved = [c for c, _ in positive]
         except (json.JSONDecodeError, TypeError):
             pass
+
+        # Names from waiver row (preferred) and drop lookup in roster.
+        add_name = str(row.get("player_name", "")) or add_id
+        drop_name = _lookup_name(drop_id, my_roster_df) or drop_id
 
         # Position lookup
         add_pos = str(row.get("position", "")) if "position" in row.index else ""
@@ -390,15 +422,18 @@ def recommend_adds(
         results.append(
             {
                 "add_player_id": add_id,
+                "add_name": add_name,
                 "add_position": add_pos,
                 "add_streak": add_streak,
                 "add_callup_note": callup_note,
                 "drop_player_id": drop_id,
+                "drop_name": drop_name,
                 "drop_position": drop_pos,
                 "drop_streak": drop_streak,
                 "reason": reason,
                 "matchup_context": matchup_context,
                 "score": score,
+                "fit_score": fit_score,
                 "categories_improved": categories_improved,
             }
         )
@@ -415,6 +450,7 @@ def build_daily_report(
     callup_alerts: list[dict[str, object]],
     report_date: datetime.date | None = None,
     week_number: int = 1,
+    waiver_rankings: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Build the JSON-serializable daily report consumed by the Shiny app.
 
@@ -482,4 +518,5 @@ def build_daily_report(
             "on_pace": on_pace,
         },
         "callup_alerts": callup_alerts,
+        "waiver_rankings": waiver_rankings or [],
     }
