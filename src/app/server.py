@@ -392,14 +392,19 @@ def _empty_roster_df() -> pd.DataFrame:
 
 
 def _load_available_weeks() -> dict[str, str]:
-    """Return ``{week_number_str: label, ...}`` for all weeks with reports."""
+    """Return ``{week_number_str: label, ...}`` for all weeks with reports.
+
+    Only includes weeks 1–26 (valid fantasy weeks) and orders them ascending
+    so the dropdown reads naturally.
+    """
     weeks: dict[str, str] = {"latest": "Latest"}
     try:
         with managed_connection() as conn:
             rows = conn.execute(f"""
                 SELECT DISTINCT week_number
                 FROM {FACT_DAILY_REPORTS}
-                ORDER BY week_number DESC
+                WHERE week_number BETWEEN 1 AND 26
+                ORDER BY week_number ASC
             """).fetchall()
             for (wk,) in rows:
                 weeks[str(wk)] = f"Week {wk}"

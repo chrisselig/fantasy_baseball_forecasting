@@ -819,7 +819,13 @@ def _query_projections(
             FROM {FACT_PROJECTIONS}
             WHERE player_id IN ({placeholders})
               AND target_week = ?
-            ORDER BY projection_date DESC
+              AND projection_date = (
+                  SELECT MAX(fp2.projection_date)
+                  FROM {FACT_PROJECTIONS} fp2
+                  WHERE fp2.player_id = {FACT_PROJECTIONS}.player_id
+                    AND fp2.target_week = {FACT_PROJECTIONS}.target_week
+              )
+            ORDER BY player_id
         """,
             player_ids + [week],
         ).fetchdf()
