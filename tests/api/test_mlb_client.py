@@ -717,6 +717,7 @@ class TestGetSeasonStatsForProjections:
         return {
             "stats": [
                 {
+                    "group": {"displayName": "hitting"},
                     "splits": [
                         {
                             "stat": {
@@ -732,7 +733,7 @@ class TestGetSeasonStatsForProjections:
                                 "fielding": ".980",
                             }
                         }
-                    ]
+                    ],
                 }
             ]
         }
@@ -741,6 +742,7 @@ class TestGetSeasonStatsForProjections:
         return {
             "stats": [
                 {
+                    "group": {"displayName": "pitching"},
                     "splits": [
                         {
                             "stat": {
@@ -755,7 +757,7 @@ class TestGetSeasonStatsForProjections:
                                 "whip": "1.10",
                             }
                         }
-                    ]
+                    ],
                 }
             ]
         }
