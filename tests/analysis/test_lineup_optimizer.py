@@ -651,6 +651,31 @@ def test_recommend_adds_position_populated(config: object) -> None:
     assert adds[0]["drop_position"] == "SP"
 
 
+def test_recommend_adds_handles_ndarray_eligible_positions(config: object) -> None:
+    """Roster from MotherDuck returns eligible_positions as numpy arrays.
+
+    Regression: _lookup_position used to do `if pos and ...` which blew up on
+    ndarray with "truth value of an array is ambiguous". Drop the `position`
+    column so the fallback to `eligible_positions` (ndarray) is exercised.
+    """
+    import numpy as np
+
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = _make_enriched_waiver_df()
+    roster = _make_enriched_roster_df()
+    # Force fallback path: drop the explicit position column and swap the
+    # eligible_positions list for a numpy array (what DuckDB VARCHAR[] yields).
+    roster = roster.drop(columns=["position"])
+    roster.at[0, "eligible_positions"] = np.array(["SP"], dtype=object)
+
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    assert adds[0]["drop_position"] == "SP"
+
+
 def test_recommend_adds_streak_populated(config: object) -> None:
     """add_streak and drop_streak should reflect the streak column."""
     from src.config import LeagueSettings
