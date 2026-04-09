@@ -23,6 +23,7 @@ from src.db.connection import managed_connection
 from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
+    FACT_MATCHUPS,
     FACT_PLAYER_NEWS,
     FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
@@ -196,6 +197,93 @@ def _safe_count(v: Any) -> str:
 def _get_my_team_key() -> str:
     """Return my team key from league config."""
     return load_league_settings().my_team_key
+
+
+# Yahoo scoreboard column → category key mapping
+_YAHOO_STAT_MAP_HOME: dict[str, str] = {
+    "h_home": "h",
+    "hr_home": "hr",
+    "sb_home": "sb",
+    "bb_home": "bb",
+    "fpct_home": "fpct",
+    "avg_home": "avg",
+    "ops_home": "ops",
+    "w_home": "w",
+    "k_home": "k",
+    "whip_home": "whip",
+    "k_bb_home": "k_bb",
+    "sv_h_home": "sv_h",
+}
+_YAHOO_STAT_MAP_AWAY: dict[str, str] = {
+    "h_away": "h",
+    "hr_away": "hr",
+    "sb_away": "sb",
+    "bb_away": "bb",
+    "fpct_away": "fpct",
+    "avg_away": "avg",
+    "ops_away": "ops",
+    "w_away": "w",
+    "k_away": "k",
+    "whip_away": "whip",
+    "k_bb_away": "k_bb",
+    "sv_h_away": "sv_h",
+}
+
+
+def _load_yahoo_matchup_stats() -> dict[str, dict[str, float]]:
+    """Load actual weekly stats from Yahoo scoreboard (fact_matchups).
+
+    Returns a dict ``{"mine": {cat: val, ...}, "opp": {cat: val, ...}}``.
+    Values come directly from Yahoo's scoreboard for the current week.
+    """
+    empty: dict[str, dict[str, float]] = {"mine": {}, "opp": {}}
+    try:
+        team_key = _get_my_team_key()
+        with managed_connection() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM {FACT_MATCHUPS}
+                WHERE (team_id_home = ? OR team_id_away = ?)
+                ORDER BY week_number DESC
+                LIMIT 1
+            """,
+                [team_key, team_key],
+            ).fetchone()
+            if not row:
+                return empty
+            cols = [
+                desc[0]
+                for desc in conn.execute(
+                    f"SELECT * FROM {FACT_MATCHUPS} LIMIT 0"
+                ).description
+            ]
+            data = dict(zip(cols, row, strict=False))
+
+            is_home = data.get("team_id_home") == team_key
+            mine_map = _YAHOO_STAT_MAP_HOME if is_home else _YAHOO_STAT_MAP_AWAY
+            opp_map = _YAHOO_STAT_MAP_AWAY if is_home else _YAHOO_STAT_MAP_HOME
+
+            mine: dict[str, float] = {}
+            opp: dict[str, float] = {}
+            for col, cat in mine_map.items():
+                v = data.get(col)
+                if v is not None:
+                    try:
+                        mine[cat] = float(v)
+                    except (ValueError, TypeError):
+                        pass
+            for col, cat in opp_map.items():
+                v = data.get(col)
+                if v is not None:
+                    try:
+                        opp[cat] = float(v)
+                    except (ValueError, TypeError):
+                        pass
+            return {"mine": mine, "opp": opp}
+    except Exception as exc:
+        logger.warning("Could not load Yahoo matchup stats: %s", exc)
+        return empty
 
 
 def _load_data_freshness() -> dict[str, object]:
@@ -745,20 +833,33 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     @render.ui
     def matchup_scoreboard_ui() -> Tag:
         df = matchup_data()
-        if df.empty:
+        yahoo = _load_yahoo_matchup_stats()
+        if df.empty and not yahoo["mine"]:
             return ui.p(
                 "No matchup data available.", style="padding:0.5rem;color:#666;"
             )
-        headers = ["Category", "Mine", "Opp", "Win%", "Status"]
+        headers = [
+            "Category",
+            "My Actual",
+            "Opp Actual",
+            "My Proj",
+            "Opp Proj",
+            "Win%",
+            "Status",
+        ]
         rows: list[list[Any]] = []
         for _, r in df.iterrows():
             status = str(r.get("status", ""))
             win_prob = float(r.get("win_prob", 0.5))
             cat = str(r.get("category", ""))
             cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
+            my_actual = yahoo["mine"].get(cat)
+            opp_actual = yahoo["opp"].get(cat)
             rows.append(
                 [
                     cat_label,
+                    _fmt_stat(my_actual),
+                    _fmt_stat(opp_actual),
                     _fmt_stat(r.get("my_value", "")),
                     _fmt_stat(r.get("opp_value", "")),
                     ui.tags.span(

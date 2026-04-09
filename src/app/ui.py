@@ -77,11 +77,10 @@ app_ui = ui.page_navbar(
             _card("Matchup Outlook", ui.output_ui("projected_wins_ui")),
             col_widths=[12],
         ),
-        # Row 3 — Lineup + scoreboard
+        # Row 3 — Category scoreboard (full width)
         ui.layout_columns(
-            _card("Today's Lineup", ui.output_data_frame("lineup_table")),
             _card("Category Scoreboard", ui.output_ui("matchup_scoreboard_ui")),
-            col_widths=[5, 7],
+            col_widths=[12],
         ),
     ),
     # ── Tab 2: Matchup Detail ─────────────────────────────────────────────
