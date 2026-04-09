@@ -627,14 +627,25 @@ def test_recommend_adds_enriched_fields_present(config: object) -> None:
         "reason",
         "categories_improved",
         "add_position",
+        "add_is_pitcher",
         "add_streak",
         "add_callup_note",
         "drop_position",
+        "drop_is_pitcher",
         "drop_streak",
         "matchup_context",
+        "category_breakdown",
     }
     missing = required_keys - set(add.keys())
     assert not missing, f"Missing enrichment keys: {missing}"
+    # SP waiver pick → both sides should be classified as pitcher
+    assert add["add_is_pitcher"] is True
+    assert add["drop_is_pitcher"] is True
+    # Category breakdown should have entries (cat_scores had k=2.0, w=1.5)
+    assert isinstance(add["category_breakdown"], list)
+    assert len(add["category_breakdown"]) >= 1
+    first = add["category_breakdown"][0]
+    assert "category" in first and "weighted_z" in first and "status" in first
 
 
 def test_recommend_adds_position_populated(config: object) -> None:

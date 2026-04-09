@@ -18,6 +18,7 @@ from htmltools import Tag
 from shiny import Inputs, Outputs, Session, reactive, render, ui
 
 from src.analysis.hot_cold import annotate_with_streaks, match_win_probability
+from src.analysis.lineup_optimizer import _position_is_pitcher
 from src.config import load_league_settings
 from src.db.connection import managed_connection
 from src.db.schema import (
@@ -1117,10 +1118,19 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             callup_note = str(a.get("add_callup_note", ""))
             matchup_ctx = str(a.get("matchup_context", ""))
 
-            # Determine pitcher vs batter for projection display
-            pitcher_positions = {"SP", "RP", "P"}
-            add_is_pitcher = bool(set(add_pos.split("/")) & pitcher_positions)
-            drop_is_pitcher = bool(set(drop_pos.split("/")) & pitcher_positions)
+            # Determine pitcher vs batter for projection display.
+            # Prefer the explicit flag from the pipeline; fall back to
+            # parsing the position string on both "," and "/" separators.
+            add_is_pitcher = bool(
+                a.get("add_is_pitcher")
+                if "add_is_pitcher" in a
+                else _position_is_pitcher(add_pos)
+            )
+            drop_is_pitcher = bool(
+                a.get("drop_is_pitcher")
+                if "drop_is_pitcher" in a
+                else _position_is_pitcher(drop_pos)
+            )
 
             raw_add_proj = a.get("add_proj")
             add_proj = _proj_row(
@@ -1150,6 +1160,70 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 )
                 for lbl in cat_labels
             ]
+
+            # Category breakdown: per-category weighted z-contribution +
+            # matchup status. This is the "why" data that explains each
+            # recommended add.
+            raw_breakdown = a.get("category_breakdown", [])
+            breakdown_rows: list[Any] = []
+            if isinstance(raw_breakdown, list):
+                status_color = {
+                    "flippable_win": "#4fc3f7",
+                    "flippable_loss": "#ef5350",
+                    "toss_up": "#ffb74d",
+                    "safe_win": "#66bb6a",
+                    "safe_loss": "#616161",
+                }
+                status_short = {
+                    "flippable_win": "leading",
+                    "flippable_loss": "trailing",
+                    "toss_up": "toss-up",
+                    "safe_win": "safe win",
+                    "safe_loss": "safe loss",
+                }
+                for entry in raw_breakdown:
+                    if not isinstance(entry, dict):
+                        continue
+                    cat_key = str(entry.get("category", ""))
+                    weighted_z = float(entry.get("weighted_z", 0.0))
+                    status = str(entry.get("status", "toss_up"))
+                    label = _CATEGORY_META.get(cat_key, {}).get(
+                        "label", cat_key.upper()
+                    )
+                    sign = "+" if weighted_z >= 0 else ""
+                    contrib_color = (
+                        "#66bb6a"
+                        if weighted_z >= 0.5
+                        else "#ef5350"
+                        if weighted_z <= -0.5
+                        else "#a0b4c8"
+                    )
+                    breakdown_rows.append(
+                        ui.tags.div(
+                            ui.tags.span(
+                                str(label),
+                                style=(
+                                    "display:inline-block;min-width:48px;"
+                                    "font-size:0.72rem;font-weight:700;color:#e8eef5;"
+                                ),
+                            ),
+                            ui.tags.span(
+                                f"{sign}{weighted_z:.2f}",
+                                style=(
+                                    "display:inline-block;min-width:52px;"
+                                    f"font-size:0.72rem;font-weight:700;color:{contrib_color};"
+                                ),
+                            ),
+                            ui.tags.span(
+                                status_short.get(status, status),
+                                style=(
+                                    f"font-size:0.68rem;color:{status_color.get(status, '#888')};"
+                                    "text-transform:uppercase;letter-spacing:0.04em;"
+                                ),
+                            ),
+                            style="display:flex;gap:10px;align-items:center;padding:2px 0;",
+                        )
+                    )
 
             # Player header row: ADD name + position + streak badge
             def _player_header(
@@ -1223,6 +1297,41 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 )
                 if callup_note
                 else ui.tags.span(),
+                # Collapsible "why" panel: per-category contribution breakdown.
+                ui.HTML(
+                    "<details style='margin-top:8px;'>"
+                    "<summary style='cursor:pointer;font-size:0.72rem;color:#7ab8d4;"
+                    "font-weight:700;list-style:none;'>"
+                    "Why this pick? ▾</summary></details>"
+                )
+                if not breakdown_rows
+                else ui.tags.details(
+                    ui.tags.summary(
+                        "Why this pick? ▾",
+                        style=(
+                            "cursor:pointer;font-size:0.72rem;color:#7ab8d4;"
+                            "font-weight:700;list-style:none;margin-bottom:4px;"
+                        ),
+                    ),
+                    ui.tags.div(
+                        ui.tags.div(
+                            "Per-category contribution (weighted z-score). "
+                            "Positive = this pickup helps the category; "
+                            "flippable/toss-up categories are weighted higher "
+                            "because they swing the match.",
+                            style=(
+                                "font-size:0.68rem;color:#8ab;margin-bottom:6px;"
+                                "line-height:1.35;"
+                            ),
+                        ),
+                        *breakdown_rows,
+                        style=(
+                            "background:#09182c;border:1px solid #1e3a5f;"
+                            "border-radius:4px;padding:6px 10px;margin-top:2px;"
+                        ),
+                    ),
+                    style="margin-top:8px;",
+                ),
                 style=(
                     "background:#0d1f38;border:1px solid #1e3a5f;border-radius:6px;"
                     "padding:0.75rem 1rem;margin-bottom:0.75rem;overflow:hidden;"
