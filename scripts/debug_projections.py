@@ -1,8 +1,7 @@
 """
 debug_projections.py
 
-Diagnostic script to check projection data in MotherDuck.
-Prints key metrics to diagnose why projections are inflated.
+Diagnostic script to trace the EXACT projection calculation for my team.
 """
 
 from __future__ import annotations
@@ -11,11 +10,17 @@ import datetime
 import json
 import logging
 
+import pandas as pd
+
+from src.analysis.matchup_analyzer import project_week_totals
+from src.config import load_league_settings
 from src.db.connection import managed_connection
 from src.db.schema import (
     FACT_DAILY_REPORTS,
+    FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
     FACT_ROSTERS,
+    DIM_PLAYERS,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -23,114 +28,137 @@ logger = logging.getLogger(__name__)
 
 
 def debug() -> None:
+    settings = load_league_settings()
+    team_key = settings.my_team_key
+    today = datetime.date(2026, 4, 9)
+    week = 3
+    week_start = today - datetime.timedelta(days=today.weekday())  # Monday
+    week_end = week_start + datetime.timedelta(days=6)
+    days_remaining = max(0, (week_end - today).days)
+
+    print(f"\ntoday={today}, week_start={week_start}, week_end={week_end}")
+    print(f"days_remaining={days_remaining}, team_key={team_key}")
+
     with managed_connection() as conn:
-        # 1. Check latest report's matchup_summary
-        print("\n=== LATEST REPORT ===")
-        result = conn.execute(f"""
-            SELECT report_date, week_number, report_json
-            FROM {FACT_DAILY_REPORTS}
-            ORDER BY report_date DESC
-            LIMIT 1
-        """).fetchone()
-        if result:
-            report_date, week, report_json = result
-            report = json.loads(report_json)
-            print(f"Report date: {report_date}, Week: {week}")
-            matchup = report.get("matchup_summary", [])
-            print(f"Matchup categories: {len(matchup)}")
-            for cat in matchup[:3]:
-                print(f"  {cat['category']}: my={cat['my_value']}, opp={cat['opp_value']}")
-            ip_pace = report.get("ip_pace", {})
-            print(f"IP pace: {ip_pace}")
-        else:
-            print("No reports found!")
+        # 1. Get my roster
+        roster_df = conn.execute(f"""
+            SELECT r.player_id, p.full_name
+            FROM {FACT_ROSTERS} r
+            LEFT JOIN {DIM_PLAYERS} p ON r.player_id = p.player_id
+            WHERE r.team_id = ? AND r.snapshot_date = ?
+        """, [team_key, today]).fetchdf()
+        print(f"\n=== MY ROSTER: {len(roster_df)} players ===")
+        for _, r in roster_df.iterrows():
+            print(f"  {r['player_id']}: {r['full_name']}")
 
-        # 2. Check projection row counts
-        print("\n=== PROJECTION COUNTS ===")
-        rows = conn.execute(f"""
-            SELECT target_week, projection_date, COUNT(*) as cnt
-            FROM {FACT_PROJECTIONS}
-            GROUP BY target_week, projection_date
-            ORDER BY target_week, projection_date DESC
-        """).fetchall()
-        for tw, pd_, cnt in rows:
-            print(f"  week={tw}, date={pd_}, rows={cnt}")
+        if roster_df.empty:
+            print("ERROR: Empty roster!")
+            return
 
-        # 3. Check sample projection values (are they per-game or season totals?)
-        print("\n=== SAMPLE PROJECTIONS (latest date, week 3) ===")
-        samples = conn.execute(f"""
-            SELECT player_id, projection_date, games_remaining, source,
-                   proj_h, proj_hr, proj_ab, proj_ip, proj_k, proj_bb
-            FROM {FACT_PROJECTIONS}
-            WHERE target_week = 3
-            ORDER BY projection_date DESC
-            LIMIT 10
-        """).fetchall()
-        for row in samples:
-            pid, pd_, gr, src, h, hr, ab, ip, k, bb = row
-            print(f"  {pid}: date={pd_}, games_rem={gr}, src={src}")
-            print(f"    proj_h={h}, proj_hr={hr}, proj_ab={ab}, proj_ip={ip}, proj_k={k}, proj_bb={bb}")
+        player_ids = roster_df["player_id"].tolist()
+        placeholders = ", ".join(["?" for _ in player_ids])
 
-        # 4. Check if there are duplicate projection_dates per player
-        print("\n=== DUPLICATE CHECK (week 3) ===")
-        dupes = conn.execute(f"""
-            SELECT player_id, COUNT(DISTINCT projection_date) as n_dates
-            FROM {FACT_PROJECTIONS}
-            WHERE target_week = 3
+        # 2. Get week stats for my roster
+        stats_df = conn.execute(f"""
+            SELECT player_id,
+                SUM(COALESCE(ab, 0)) AS ab,
+                SUM(COALESCE(h, 0)) AS h,
+                SUM(COALESCE(hr, 0)) AS hr,
+                SUM(COALESCE(sb, 0)) AS sb,
+                SUM(COALESCE(bb, 0)) AS bb,
+                SUM(COALESCE(hbp, 0)) AS hbp,
+                SUM(COALESCE(sf, 0)) AS sf,
+                SUM(COALESCE(tb, 0)) AS tb,
+                SUM(COALESCE(errors, 0)) AS errors,
+                SUM(COALESCE(chances, 0)) AS chances,
+                SUM(COALESCE(ip, 0)) AS ip,
+                SUM(COALESCE(w, 0)) AS w,
+                SUM(COALESCE(k, 0)) AS k,
+                SUM(COALESCE(walks_allowed, 0)) AS walks_allowed,
+                SUM(COALESCE(hits_allowed, 0)) AS hits_allowed,
+                SUM(COALESCE(sv, 0)) AS sv,
+                SUM(COALESCE(holds, 0)) AS holds
+            FROM {FACT_PLAYER_STATS_DAILY}
+            WHERE player_id IN ({placeholders})
+              AND stat_date >= ? AND stat_date < ?
             GROUP BY player_id
-            HAVING COUNT(DISTINCT projection_date) > 1
-            ORDER BY n_dates DESC
-            LIMIT 5
-        """).fetchall()
-        if dupes:
-            for pid, n in dupes:
-                print(f"  {pid}: {n} projection dates")
-        else:
-            print("  No duplicates — all players have 1 projection date")
+        """, player_ids + [week_start, today]).fetchdf()
+        print(f"\n=== WEEK STATS: {len(stats_df)} players with stats ===")
+        team_h = stats_df["h"].sum() if not stats_df.empty else 0
+        team_hr = stats_df["hr"].sum() if not stats_df.empty else 0
+        print(f"  Team H: {team_h}, Team HR: {team_hr}")
 
-        # 5. Check what dedup query returns
-        print("\n=== DEDUP QUERY ROW COUNT (week 3) ===")
-        dedup_count = conn.execute(f"""
-            SELECT COUNT(*)
+        # 3. Get projections (with dedup)
+        proj_df = conn.execute(f"""
+            SELECT *
             FROM {FACT_PROJECTIONS}
-            WHERE target_week = 3
+            WHERE player_id IN ({placeholders})
+              AND target_week = ?
               AND projection_date = (
                   SELECT MAX(fp2.projection_date)
                   FROM {FACT_PROJECTIONS} fp2
                   WHERE fp2.player_id = {FACT_PROJECTIONS}.player_id
                     AND fp2.target_week = {FACT_PROJECTIONS}.target_week
               )
-        """).fetchone()
-        total_count = conn.execute(f"""
-            SELECT COUNT(*)
+            ORDER BY player_id
+        """, player_ids + [week]).fetchdf()
+        print(f"\n=== PROJECTIONS (deduped): {len(proj_df)} rows ===")
+        if not proj_df.empty:
+            print(f"  Projection dates: {proj_df['projection_date'].unique()}")
+            print(f"  Sum proj_h: {proj_df['proj_h'].sum():.2f}")
+            print(f"  Sum proj_hr: {proj_df['proj_hr'].sum():.2f}")
+            print(f"  Sum proj_ab: {proj_df['proj_ab'].sum():.2f}")
+            print(f"  Sum proj_k: {proj_df['proj_k'].sum():.2f}")
+
+            # Show top proj_h players
+            print("\n  Top proj_h (per-game rates):")
+            top_h = proj_df.nlargest(5, "proj_h")[["player_id", "proj_h", "proj_hr", "proj_ab", "proj_ip"]]
+            for _, r in top_h.iterrows():
+                name = roster_df[roster_df["player_id"] == r["player_id"]]["full_name"].values
+                name = name[0] if len(name) > 0 else "?"
+                print(f"    {name}: proj_h={r['proj_h']:.2f}, proj_ab={r['proj_ab']:.2f}, proj_ip={r['proj_ip']}")
+
+        # 4. Run project_week_totals
+        print(f"\n=== project_week_totals(days_remaining={days_remaining}) ===")
+        totals = project_week_totals(stats_df, proj_df, days_remaining)
+        print(f"  Rows: {len(totals)}")
+        if not totals.empty:
+            print(f"  Total H: {totals['h'].sum():.2f}")
+            print(f"  Total HR: {totals['hr'].sum():.2f}")
+            print(f"  Total AB: {totals['ab'].sum():.2f}")
+            print(f"  Total K: {totals['k'].sum():.2f}")
+
+            # Show top H contributors
+            print("\n  Top H contributors:")
+            totals_with_name = totals.merge(roster_df[["player_id", "full_name"]], on="player_id", how="left")
+            top_contributors = totals_with_name.nlargest(5, "h")
+            for _, r in top_contributors.iterrows():
+                print(f"    {r.get('full_name', '?')}: h={r['h']:.2f}, hr={r['hr']:.2f}, ab={r['ab']:.2f}")
+
+        # 5. Check WITHOUT dedup (old query behavior)
+        print("\n=== WITHOUT DEDUP (old query) ===")
+        proj_no_dedup = conn.execute(f"""
+            SELECT *
             FROM {FACT_PROJECTIONS}
-            WHERE target_week = 3
-        """).fetchone()
-        print(f"  Dedup count: {dedup_count[0]}, Total count: {total_count[0]}")
+            WHERE player_id IN ({placeholders})
+              AND target_week = ?
+            ORDER BY projection_date DESC
+        """, player_ids + [week]).fetchdf()
+        print(f"  Rows: {len(proj_no_dedup)} (vs {len(proj_df)} deduped)")
+        if not proj_no_dedup.empty:
+            totals_no_dedup = project_week_totals(stats_df, proj_no_dedup, days_remaining)
+            print(f"  Total H (no dedup): {totals_no_dedup['h'].sum():.2f}")
+            print(f"  Total HR (no dedup): {totals_no_dedup['hr'].sum():.2f}")
 
-        # 6. Check roster size
-        print("\n=== ROSTER SIZE ===")
-        roster_info = conn.execute(f"""
-            SELECT snapshot_date, team_id, COUNT(*) as n_players
-            FROM {FACT_ROSTERS}
-            GROUP BY snapshot_date, team_id
-            ORDER BY snapshot_date DESC
-            LIMIT 10
-        """).fetchall()
-        for sd, tid, n in roster_info:
-            print(f"  date={sd}, team={tid}, players={n}")
-
-        # 7. Check weeks in daily reports
-        print("\n=== WEEKS IN DAILY REPORTS ===")
-        weeks = conn.execute(f"""
-            SELECT DISTINCT week_number, COUNT(*) as n_reports,
-                   MIN(report_date) as min_date, MAX(report_date) as max_date
+        # 6. Week 12 data
+        print("\n=== WEEK 12 DATA ===")
+        w12 = conn.execute(f"""
+            SELECT report_date, season, week_number
             FROM {FACT_DAILY_REPORTS}
-            GROUP BY week_number
-            ORDER BY week_number
+            WHERE week_number = 12
         """).fetchall()
-        for wk, n, mn, mx in weeks:
-            print(f"  Week {wk}: {n} reports ({mn} to {mx})")
+        for rd, s, wk in w12:
+            print(f"  date={rd}, season={s}, week={wk}")
 
 
 if __name__ == "__main__":
