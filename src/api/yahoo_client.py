@@ -334,8 +334,16 @@ class YahooClient:
 
     # ── Matchup ───────────────────────────────────────────────────────────────
 
-    def get_current_matchup(self) -> pd.DataFrame:
-        """Fetch the current week's matchup stats for the authenticated team.
+    def get_current_matchup(self, week: int | None = None) -> pd.DataFrame:
+        """Fetch the current week's matchup stats via the league scoreboard.
+
+        The league scoreboard endpoint returns all matchups for the specified
+        week with team stats included — unlike the ``team/{key}/matchups``
+        endpoint which only returns matchup metadata without team data.
+
+        Args:
+            week: Fantasy week number.  If ``None``, Yahoo returns the
+                  current active week automatically.
 
         Returns:
             DataFrame with columns matching ``fact_matchups``:
@@ -343,9 +351,11 @@ class YahooClient:
             team_id_away, plus all stat columns (h_home, hr_home, …).
         """
         league_key = self._league_key()
-        team_key = self._my_team_key()
-        data = self._get(f"team/{team_key}/matchups;out=teams")
-        return _parse_matchup_response(data, league_key)
+        endpoint = f"league/{league_key}/scoreboard"
+        if week is not None:
+            endpoint += f";week={week}"
+        data = self._get(endpoint)
+        return _parse_scoreboard_response(data, league_key)
 
     # ── Free agents ───────────────────────────────────────────────────────────
 
@@ -579,6 +589,174 @@ def _parse_all_rosters_response(data: dict[str, Any], week: int) -> pd.DataFrame
             ]
         )
     return pd.concat(frames, ignore_index=True)
+
+
+def _build_matchup_row(
+    matchup: dict[str, Any], league_id: int
+) -> dict[str, Any] | None:
+    """Build a single matchup row dict from a parsed matchup object.
+
+    Returns ``None`` if the matchup cannot be parsed (e.g. < 2 teams).
+    """
+    week_number = int(matchup.get("week", 0))
+    season = int(matchup.get("week_start", "2026-01-01")[:4])
+
+    teams_data = matchup.get("teams", {})
+    team_items = _extract_team_items(teams_data)
+
+    team_keys: list[str] = []
+    team_stats: list[dict[str, float]] = []
+
+    for _tk, team_entry in team_items:
+        team = team_entry.get("team", [])
+        if not team:
+            continue
+        team_keys.append(_extract_team_key(team))
+        stats_raw = _extract_team_stats(team)
+        stats_dict: dict[str, float] = {}
+        for stat_entry in stats_raw:
+            if isinstance(stat_entry, dict):
+                stat = stat_entry.get("stat", {})
+                sid = stat.get("stat_id", "")
+                val = stat.get("value", None)
+                if sid and val is not None:
+                    try:
+                        stats_dict[str(sid)] = float(val)
+                    except (ValueError, TypeError):
+                        stats_dict[str(sid)] = 0.0
+        team_stats.append(stats_dict)
+
+    if len(team_keys) < 2:
+        return None
+
+    home_key, away_key = team_keys[0], team_keys[1]
+    home_stats = team_stats[0] if team_stats else {}
+    away_stats = team_stats[1] if len(team_stats) > 1 else {}
+
+    matchup_id = f"{league_id}_{season}_W{week_number:02d}_{home_key}vs{away_key}"
+
+    return {
+        "matchup_id": matchup_id,
+        "league_id": league_id,
+        "week_number": week_number,
+        "season": season,
+        "team_id_home": home_key,
+        "team_id_away": away_key,
+        # Batter stats
+        "h_home": home_stats.get("7"),
+        "h_away": away_stats.get("7"),
+        "hr_home": home_stats.get("12"),
+        "hr_away": away_stats.get("12"),
+        "sb_home": home_stats.get("16"),
+        "sb_away": away_stats.get("16"),
+        "bb_home": home_stats.get("13"),
+        "bb_away": away_stats.get("13"),
+        "avg_home": home_stats.get("3"),
+        "avg_away": away_stats.get("3"),
+        "ops_home": home_stats.get("55"),
+        "ops_away": away_stats.get("55"),
+        "fpct_home": home_stats.get("23"),
+        "fpct_away": away_stats.get("23"),
+        # Pitcher stats
+        "w_home": home_stats.get("28"),
+        "w_away": away_stats.get("28"),
+        "k_home": home_stats.get("42"),
+        "k_away": away_stats.get("42"),
+        "whip_home": home_stats.get("48"),
+        "whip_away": away_stats.get("48"),
+        "k_bb_home": home_stats.get("26"),
+        "k_bb_away": away_stats.get("26"),
+        "sv_h_home": home_stats.get("57"),
+        "sv_h_away": away_stats.get("57"),
+        "categories_won_home": None,
+        "categories_won_away": None,
+        "result": None,
+    }
+
+
+def _parse_scoreboard_response(data: dict[str, Any], league_key: str) -> pd.DataFrame:
+    """Parse a ``league/{key}/scoreboard`` response into fact_matchups shape.
+
+    The scoreboard endpoint returns all matchups for the current (or specified)
+    week, with team stats included.  Structure::
+
+        {"fantasy_content": {"league": [
+            [{league_meta}],
+            {"scoreboard": {"0": {"matchups": {"0": {"matchup": {…}}, …}}}}
+        ]}}
+    """
+    rows: list[dict[str, Any]] = []
+
+    try:
+        league_id = int(league_key.split(".")[-1])
+
+        # Navigate to the scoreboard → matchups dict
+        scoreboard = _safe_get(
+            data, "fantasy_content", "league", 1, "scoreboard", default=None
+        )
+        if scoreboard is None:
+            logger.warning(
+                "Scoreboard response has no 'scoreboard' key. league[1] keys: %s",
+                list(
+                    _safe_get(data, "fantasy_content", "league", 1, default={}).keys()
+                )[:10],
+            )
+            return _empty_matchup_df()
+
+        # The scoreboard may contain matchups directly or nested in "0"
+        if isinstance(scoreboard, dict) and "matchups" in scoreboard:
+            matchups = scoreboard["matchups"]
+        elif isinstance(scoreboard, dict) and "0" in scoreboard:
+            matchups = _safe_get(scoreboard, "0", "matchups", default={})
+        else:
+            matchups = scoreboard if isinstance(scoreboard, dict) else {}
+
+        if not isinstance(matchups, dict):
+            logger.warning(
+                "Scoreboard 'matchups' not a dict (type=%s).",
+                type(matchups).__name__,
+            )
+            return _empty_matchup_df()
+
+        logger.info(
+            "Scoreboard contains %s matchup entries (keys: %s).",
+            matchups.get("count", "?"),
+            [k for k in matchups if k != "count"][:5],
+        )
+
+        for _k, matchup_entry in matchups.items():
+            if _k == "count":
+                continue
+            if not isinstance(matchup_entry, dict):
+                continue
+
+            matchup = matchup_entry.get("matchup", matchup_entry)
+
+            row = _build_matchup_row(matchup, league_id)
+            if row:
+                rows.append(row)
+            elif not rows:
+                # Log structure of first failing entry for diagnostics
+                logger.info(
+                    "Scoreboard matchup entry %s structure: "
+                    "matchup_keys=%s, teams_type=%s, teams_keys=%s",
+                    _k,
+                    list(matchup.keys())[:8],
+                    type(matchup.get("teams", {}).__class__.__name__),
+                    (
+                        list(matchup.get("teams", {}).keys())[:5]
+                        if isinstance(matchup.get("teams"), dict)
+                        else "n/a"
+                    ),
+                )
+
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.warning("Failed to parse scoreboard response: %s", exc)
+
+    logger.info("Parsed %d matchup rows from scoreboard.", len(rows))
+    if not rows:
+        return _empty_matchup_df()
+    return pd.DataFrame(rows)
 
 
 def _extract_team_items(teams_data: Any) -> list[tuple[str, Any]]:
