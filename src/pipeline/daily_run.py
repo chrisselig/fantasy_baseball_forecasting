@@ -1495,7 +1495,7 @@ def run_daily_pipeline(
         )
     except Exception as exc:
         errors.append(f"analysis: {exc}")
-        logger.error("Analysis failed: %s", exc)
+        logger.error("Analysis failed: %s", exc, exc_info=True)
 
     # Step 6: Write daily report
     if report:
