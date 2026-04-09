@@ -582,13 +582,58 @@ def _parse_all_rosters_response(data: dict[str, Any], week: int) -> pd.DataFrame
 
 
 def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFrame:
-    """Parse matchup response into the fact_matchups shape."""
+    """Parse matchup response into the fact_matchups shape.
+
+    Yahoo structures the ``team/{key}/matchups`` response in one of two ways:
+
+    **Format A** (list-style ``team``)::
+
+        {"fantasy_content": {"team": [[{team_meta}], {"matchups": {…}}]}}
+
+    **Format B** (dict-style ``team``)::
+
+        {"fantasy_content": {"team": {"team_key": "…", "matchups": {…}}}}
+
+    Both formats are handled.  Within each matchup, ``teams`` may likewise
+    be a dict with numeric-string keys or a list.
+    """
     rows: list[dict[str, Any]] = []
 
     try:
-        matchups = _safe_get(data, "fantasy_content", "team", 1, "matchups", default={})
-        if not isinstance(matchups, dict):
+        team_data = _safe_get(data, "fantasy_content", "team", default=None)
+        if team_data is None:
+            logger.warning("Matchup response has no 'team' key.")
             return _empty_matchup_df()
+
+        # Resolve matchups dict from either format
+        if isinstance(team_data, list) and len(team_data) > 1:
+            matchups = (
+                team_data[1].get("matchups", {})
+                if isinstance(team_data[1], dict)
+                else {}
+            )
+        elif isinstance(team_data, dict):
+            matchups = team_data.get("matchups", {})
+        else:
+            logger.warning(
+                "Matchup response 'team' is unexpected type: %s",
+                type(team_data).__name__,
+            )
+            return _empty_matchup_df()
+
+        if not isinstance(matchups, dict) or not matchups:
+            logger.warning(
+                "Matchup 'matchups' empty or not a dict (type=%s, keys=%s).",
+                type(matchups).__name__,
+                list(matchups.keys())[:5] if isinstance(matchups, dict) else "n/a",
+            )
+            return _empty_matchup_df()
+
+        logger.info(
+            "Matchup response contains %s entries (keys: %s).",
+            matchups.get("count", "?"),
+            [k for k in matchups if k != "count"][:5],
+        )
 
         league_id = int(league_key.split(".")[-1])
 
@@ -608,17 +653,36 @@ def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFra
             team_keys: list[str] = []
             team_stats: list[dict[str, Any]] = []
 
-            for tk, team_entry in teams_data.items():
-                if tk == "count":
-                    continue
-                if not isinstance(team_entry, dict):
-                    continue
+            # Yahoo may return teams as a dict {"0": {…}, "1": {…}, "count": N}
+            # or as a list [{…}, {…}].
+            team_items: list[tuple[str, Any]]
+            if isinstance(teams_data, dict):
+                team_items = [
+                    (tk, tv)
+                    for tk, tv in teams_data.items()
+                    if tk != "count" and isinstance(tv, dict)
+                ]
+            elif isinstance(teams_data, list):
+                team_items = [
+                    (str(i), tv)
+                    for i, tv in enumerate(teams_data)
+                    if isinstance(tv, dict)
+                ]
+            else:
+                logger.warning(
+                    "Matchup week %d teams_data is %s, skipping.",
+                    week_number,
+                    type(teams_data).__name__,
+                )
+                continue
+
+            for _tk, team_entry in team_items:
                 team = team_entry.get("team", [])
                 if not team:
                     continue
                 team_meta: list[Any] = team[0] if isinstance(team, list) else []
                 tkey = ""
-                for item in team_meta:
+                for item in team_meta if isinstance(team_meta, list) else [team_meta]:
                     if isinstance(item, dict) and "team_key" in item:
                         tkey = item["team_key"]
                         break
@@ -639,6 +703,11 @@ def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFra
                 team_stats.append(stats_dict)
 
             if len(team_keys) < 2:
+                logger.debug(
+                    "Matchup week %d has %d team keys, need 2. Skipping.",
+                    week_number,
+                    len(team_keys),
+                )
                 continue
 
             home_key, away_key = team_keys[0], team_keys[1]
@@ -656,7 +725,6 @@ def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFra
                 "season": season,
                 "team_id_home": home_key,
                 "team_id_away": away_key,
-                # Stat columns — Yahoo stat IDs mapped to schema column names
                 # Batter stats
                 "h_home": home_stats.get("7"),
                 "h_away": away_stats.get("7"),
@@ -691,7 +759,26 @@ def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFra
     except (KeyError, IndexError, TypeError) as exc:
         logger.warning("Failed to parse matchup response: %s", exc)
 
+    logger.info("Parsed %d matchup rows from Yahoo response.", len(rows))
     if not rows:
+        # Dump top-level structure for debugging
+        _keys = []
+        fc = data.get("fantasy_content", {}) if isinstance(data, dict) else {}
+        team_obj = fc.get("team") if isinstance(fc, dict) else None
+        if isinstance(team_obj, list):
+            _keys = [
+                type(item).__name__
+                + (f"(keys={list(item.keys())[:3]})" if isinstance(item, dict) else "")
+                for item in team_obj[:4]
+            ]
+        elif isinstance(team_obj, dict):
+            _keys = list(team_obj.keys())[:6]
+        logger.warning(
+            "Matchup parser produced 0 rows. "
+            "Response structure: fantasy_content.team = %s (type=%s)",
+            _keys,
+            type(team_obj).__name__ if team_obj is not None else "None",
+        )
         return _empty_matchup_df()
     return pd.DataFrame(rows)
 
