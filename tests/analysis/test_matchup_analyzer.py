@@ -142,7 +142,10 @@ def test_project_week_totals_adds_counting_stats(
     single_player_stats: pd.DataFrame,
     single_player_proj: pd.DataFrame,
 ) -> None:
-    result = project_week_totals(single_player_stats, single_player_proj)
+    # days_remaining=1 → per-game rates × 1 = rates added directly
+    result = project_week_totals(
+        single_player_stats, single_player_proj, days_remaining=1
+    )
     assert len(result) == 1
     total_h = result.iloc[0]["h"]
     assert total_h == pytest.approx(8.0, abs=1e-6), f"Expected H=8, got {total_h}"
@@ -161,7 +164,7 @@ def test_project_week_totals_rate_stat_uses_components() -> None:
     # Component AVG: (10+1)/(20+10) = 11/30 ≈ 0.3667 (differs from naive average)
     stats = pd.DataFrame([_make_stats_row("p1", h=10, ab=20)])
     proj = pd.DataFrame([_make_proj_row("p1", proj_h=1.0, proj_ab=10.0)])
-    result = project_week_totals(stats, proj)
+    result = project_week_totals(stats, proj, days_remaining=1)
     avg = result.iloc[0]["avg"]
     assert avg == pytest.approx(11 / 30, abs=1e-4), f"Expected AVG=11/30, got {avg}"
 
@@ -182,13 +185,36 @@ def test_project_week_totals_whip_uses_components() -> None:
             )
         ]
     )
-    result = project_week_totals(stats, proj)
+    result = project_week_totals(stats, proj, days_remaining=1)
     whip = result.iloc[0]["whip"]
     # (4+2+8+4) / (10+5) = 18/15 = 1.20
     expected = (4 + 2 + 8 + 4) / (10 + 5)
     assert whip == pytest.approx(expected, abs=1e-4), (
         f"Expected WHIP={expected}, got {whip}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3b. project_week_totals: per-game rates scaled by days_remaining
+# ---------------------------------------------------------------------------
+
+
+def test_project_week_totals_scales_by_days_remaining() -> None:
+    # actual: H=5, proj per-game rate: H=2.0, days_remaining=3 → projected H = 5 + 2*3 = 11
+    stats = pd.DataFrame([_make_stats_row("p1", h=5, ab=20)])
+    proj = pd.DataFrame([_make_proj_row("p1", proj_h=2.0, proj_ab=6.0)])
+    result = project_week_totals(stats, proj, days_remaining=3)
+    assert result.iloc[0]["h"] == pytest.approx(11.0, abs=1e-6)
+    assert result.iloc[0]["ab"] == pytest.approx(38.0, abs=1e-6)  # 20 + 6*3
+
+
+def test_project_week_totals_zero_days_remaining_no_projection() -> None:
+    # End of week: only actuals matter, projection adds nothing
+    stats = pd.DataFrame([_make_stats_row("p1", h=10, ab=30)])
+    proj = pd.DataFrame([_make_proj_row("p1", proj_h=5.0, proj_ab=15.0)])
+    result = project_week_totals(stats, proj, days_remaining=0)
+    assert result.iloc[0]["h"] == pytest.approx(10.0, abs=1e-6)
+    assert result.iloc[0]["ab"] == pytest.approx(30.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

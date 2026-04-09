@@ -45,17 +45,23 @@ _COUNTING_STAT_MAP: dict[str, str] = {
 def project_week_totals(
     stats_df: pd.DataFrame,
     projections_df: pd.DataFrame,
+    days_remaining: int = 0,
 ) -> pd.DataFrame:
     """Combine accumulated stats with remaining-week projections.
 
-    Rate stats (AVG, OPS, FPCT, WHIP, K/BB) are computed from components,
-    never averaged directly.
+    Per-game projection rates are scaled by ``days_remaining`` (as a proxy
+    for games remaining — roughly 1 game per day in MLB) before being added
+    to actuals.  Rate stats (AVG, OPS, FPCT, WHIP, K/BB) are recomputed
+    from the combined components, never averaged directly.
 
     Args:
         stats_df: Accumulated week-to-date stats. One row per player.
                   Must contain all fact_player_stats_daily columns.
-        projections_df: Remaining-game projections. One row per player.
-                        Must contain all fact_projections columns.
+        projections_df: Remaining-game projections (per-game rates).
+                        One row per player.  Must contain all
+                        fact_projections columns.
+        days_remaining: Days left in the matchup week (0–6).  Per-game
+                        projection rates are multiplied by this value.
 
     Returns:
         DataFrame with one row per player and projected end-of-week totals.
@@ -67,6 +73,9 @@ def project_week_totals(
     merged = merged.fillna(0)
 
     result = merged[["player_id"]].copy()
+
+    # Scale factor: per-game rates × days remaining ≈ games remaining
+    scale = max(days_remaining, 0)
 
     # --- Aggregate counting stats ---
     counting_cols = [
@@ -94,7 +103,7 @@ def project_week_totals(
             merged[col] if col in merged.columns else pd.Series(0, index=merged.index)
         )
         if proj_col and proj_col in merged.columns:
-            proj_val = merged[proj_col]
+            proj_val = merged[proj_col] * scale
         else:
             proj_val = pd.Series(0, index=merged.index)
         result[col] = stat_val + proj_val
