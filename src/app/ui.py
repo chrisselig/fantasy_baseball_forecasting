@@ -67,6 +67,17 @@ app_ui = ui.page_navbar(
     # ── Tab 1: Dashboard ──────────────────────────────────────────────────
     ui.nav_panel(
         "Dashboard",
+        # Week selector
+        ui.layout_columns(
+            ui.input_select(
+                "week_select",
+                "Week",
+                choices={"latest": "Latest"},
+                selected="latest",
+                width="120px",
+            ),
+            col_widths=[2],
+        ),
         # Row 1 — Week summary + refresh
         ui.layout_columns(
             _card("Week at a Glance", ui.output_ui("week_summary_ui")),
