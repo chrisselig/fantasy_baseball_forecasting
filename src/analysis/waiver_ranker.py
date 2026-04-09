@@ -30,6 +30,7 @@ import json
 import math
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.config import LeagueSettings
@@ -101,8 +102,8 @@ def _is_pitcher(positions: Any) -> bool:
     """Return True when the player's positions include SP/RP/P."""
     if positions is None:
         return False
-    if isinstance(positions, list):
-        return bool(set(positions) & _PITCHER_POSITIONS)
+    if isinstance(positions, (list, tuple, np.ndarray)):
+        return bool({str(p).upper() for p in positions} & _PITCHER_POSITIONS)
     if isinstance(positions, str):
         parts = [p.strip().upper() for p in positions.replace("/", ",").split(",")]
         return bool(set(parts) & _PITCHER_POSITIONS)
@@ -113,9 +114,11 @@ def _positions_str(positions: Any) -> str:
     """Render positions as a short comma-separated string."""
     if positions is None:
         return ""
-    if isinstance(positions, list):
+    if isinstance(positions, (list, tuple, np.ndarray)):
         return ",".join(str(p) for p in positions)
-    return str(positions)
+    if isinstance(positions, str):
+        return positions
+    return ""
 
 
 def _compute_category_sigmas(
@@ -262,8 +265,8 @@ def find_recommended_drop(
         ep = candidate_player["eligible_positions"]
     elif "positions" in candidate_player.index:
         ep = candidate_player["positions"]
-    if isinstance(ep, list):
-        candidate_positions = ep
+    if isinstance(ep, (list, tuple, np.ndarray)):
+        candidate_positions = [str(p) for p in ep]
     elif isinstance(ep, str):
         candidate_positions = [p.strip() for p in ep.split(",")]
 
@@ -300,9 +303,13 @@ def find_recommended_drop(
 
         def shares_position(row: pd.Series[Any]) -> bool:
             ep = row.get("eligible_positions", [])
-            if isinstance(ep, str):
-                ep = [p.strip() for p in ep.split(",")]
-            return bool(set(candidate_positions) & set(ep))
+            if isinstance(ep, (list, tuple, np.ndarray)):
+                ep_list = [str(p) for p in ep]
+            elif isinstance(ep, str):
+                ep_list = [p.strip() for p in ep.split(",")]
+            else:
+                return False
+            return bool(set(candidate_positions) & set(ep_list))
 
         pos_matches = active_candidates[
             active_candidates.apply(shares_position, axis=1)

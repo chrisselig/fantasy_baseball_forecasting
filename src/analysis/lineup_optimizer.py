@@ -201,15 +201,22 @@ def _lookup_position(player_id: str, df: pd.DataFrame) -> str:
     rows = df[df["player_id"] == player_id]
     if rows.empty:
         return ""
-    # Prefer "position" column; fall back to "eligible_positions" (list or str).
+    # Prefer "position" column; fall back to "eligible_positions" (list, ndarray, or str).
+    import numpy as np
+
     for col in ("position", "eligible_positions"):
         if col not in rows.columns:
             continue
         pos = rows.iloc[0].get(col, "")
-        if isinstance(pos, list):
-            return ",".join(str(p) for p in pos) if pos else ""
-        if pos and not isinstance(pos, float):
-            return str(pos)
+        if isinstance(pos, np.ndarray):
+            pos = pos.tolist() if pos.ndim > 0 else pos.item()
+        if isinstance(pos, (list, tuple)):
+            items = [str(p) for p in pos]
+            if items:
+                return ",".join(items)
+            continue
+        if isinstance(pos, str) and pos:
+            return pos
     return ""
 
 
