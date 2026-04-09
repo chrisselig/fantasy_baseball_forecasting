@@ -32,6 +32,11 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      - name: Clean up invalid week data
+        run: python -m scripts.cleanup_bad_weeks
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+
       - name: Backfill MLB stats
         run: python -m scripts.backfill_stats "${{ inputs.start_date }}" "${{ inputs.end_date }}"
         env:
