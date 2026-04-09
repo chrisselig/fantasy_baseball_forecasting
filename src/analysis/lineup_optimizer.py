@@ -21,6 +21,12 @@ _PITCHER_SLOTS = {"SP", "RP", "P"}
 _FOCUS_STATUSES = {"flippable_win", "toss_up", "flippable_loss"}
 
 
+def _position_is_pitcher(pos: str) -> bool:
+    """Return True when the position string contains a pitcher slot."""
+    parts = {p.strip().upper() for p in pos.replace("/", ",").split(",")}
+    return bool(parts & _PITCHER_SLOTS)
+
+
 def _get_flippable_categories(matchup_df: pd.DataFrame) -> set[str]:
     """Return the set of categories that are still contested."""
     if matchup_df.empty or "status" not in matchup_df.columns:
@@ -354,14 +360,40 @@ def recommend_adds(
         # Prefer categories that are flippable/toss-up (bigger weighted_z
         # values) — take the top contributors by score.
         categories_improved: list[str] = []
+        cat_scores: dict[str, float] = {}
         cat_scores_raw = row.get("category_scores", "{}")
         try:
-            cat_scores: dict[str, float] = json.loads(str(cat_scores_raw))
+            cat_scores = json.loads(str(cat_scores_raw))
             positive = [(c, v) for c, v in cat_scores.items() if v > 0]
             positive.sort(key=lambda kv: kv[1], reverse=True)
             categories_improved = [c for c, _ in positive]
         except (json.JSONDecodeError, TypeError):
             pass
+
+        # Status lookup for matchup context per category.
+        _status_by_cat: dict[str, str] = {}
+        if not _mdf.empty and "category" in _mdf.columns and "status" in _mdf.columns:
+            for _, mrow in _mdf.iterrows():
+                _status_by_cat[str(mrow["category"])] = str(mrow["status"])
+
+        # Top contributions (positive and negative) for detailed breakdown.
+        # Rank by absolute z-contribution so the biggest drivers surface
+        # whether they help or hurt the pickup.
+        breakdown: list[dict[str, object]] = []
+        if cat_scores:
+            sorted_cats = sorted(
+                cat_scores.items(), key=lambda kv: abs(kv[1]), reverse=True
+            )
+            for cat, weighted_z in sorted_cats:
+                if weighted_z == 0:
+                    continue
+                breakdown.append(
+                    {
+                        "category": cat,
+                        "weighted_z": float(weighted_z),
+                        "status": _status_by_cat.get(cat, "toss_up"),
+                    }
+                )
 
         # Names from waiver row (preferred) and drop lookup in roster.
         add_name = str(row.get("player_name", "")) or add_id
@@ -426,22 +458,35 @@ def recommend_adds(
 
         reason = ". ".join(reason_parts) if reason_parts else "General improvement"
 
+        # Pitcher classification: prefer the waiver row's explicit
+        # is_pitcher flag (set by rank_free_agents); fall back to a
+        # position-string check that handles both "," and "/" separators.
+        add_is_pitcher = bool(
+            row.get("is_pitcher", False)
+            if "is_pitcher" in row.index
+            else _position_is_pitcher(add_pos)
+        )
+        drop_is_pitcher = _position_is_pitcher(drop_pos)
+
         results.append(
             {
                 "add_player_id": add_id,
                 "add_name": add_name,
                 "add_position": add_pos,
+                "add_is_pitcher": add_is_pitcher,
                 "add_streak": add_streak,
                 "add_callup_note": callup_note,
                 "drop_player_id": drop_id,
                 "drop_name": drop_name,
                 "drop_position": drop_pos,
+                "drop_is_pitcher": drop_is_pitcher,
                 "drop_streak": drop_streak,
                 "reason": reason,
                 "matchup_context": matchup_context,
                 "score": score,
                 "fit_score": fit_score,
                 "categories_improved": categories_improved,
+                "category_breakdown": breakdown,
             }
         )
         used_drop_ids.add(drop_id)

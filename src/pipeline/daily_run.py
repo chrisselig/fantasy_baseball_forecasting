@@ -527,7 +527,13 @@ def _step_run_analysis(
 
     # ── 10. Recommend adds ────────────────────────────────────────────────────
     acquisitions_used = _query_weekly_acquisitions(conn, team_key, today)
-    adds = recommend_adds(ranked_fa_df, my_roster_enriched, acquisitions_used, settings)
+    adds = recommend_adds(
+        ranked_fa_df,
+        my_roster_enriched,
+        acquisitions_used,
+        settings,
+        matchup_df=matchup_df,
+    )
 
     # ── 11. Build daily report ────────────────────────────────────────────────
     waiver_rankings = _serialize_waiver_rankings(ranked_fa_df)

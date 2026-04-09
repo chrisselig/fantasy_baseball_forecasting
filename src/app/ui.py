@@ -188,11 +188,91 @@ app_ui = ui.page_navbar(
         ui.layout_columns(
             _card(
                 "Free Agent Rankings",
-                _note(
-                    "Score = composite value score (0–10) weighted by your team's "
-                    "category needs. Higher is better. ⬆ badge = recent MLB call-up. "
-                    "Streak badge uses the last 7 days (hitters) or 10 days (pitchers) "
-                    "of stats — 🔥 Hot means ≥ 2 of 4 hot conditions met."
+                ui.tags.details(
+                    ui.tags.summary(
+                        "How is this scored? ▾",
+                        style=(
+                            "cursor:pointer;font-size:0.78rem;color:#1a7fa1;"
+                            "font-weight:700;list-style:none;margin-bottom:6px;"
+                        ),
+                    ),
+                    ui.tags.div(
+                        ui.tags.p(
+                            ui.tags.strong("Score"),
+                            " is a z-score value-above-replacement rollup across all "
+                            "scoring categories, weighted by your current matchup status:",
+                            style="margin:4px 0;font-size:0.78rem;color:#132747;",
+                        ),
+                        ui.tags.ul(
+                            ui.tags.li(
+                                ui.tags.strong("Flippable categories"),
+                                " (close matchups within ~10%) × 2.5 — these are the "
+                                "categories your waiver moves can actually flip.",
+                                style="font-size:0.76rem;color:#2a3f5f;",
+                            ),
+                            ui.tags.li(
+                                ui.tags.strong("Toss-ups"),
+                                " (true coin flips) × 1.5 — also high-leverage.",
+                                style="font-size:0.76rem;color:#2a3f5f;",
+                            ),
+                            ui.tags.li(
+                                ui.tags.strong("Safe wins / losses"),
+                                " × 0.15 — barely counted, because no waiver move "
+                                "changes the outcome.",
+                                style="font-size:0.76rem;color:#2a3f5f;",
+                            ),
+                            style="margin:4px 0 8px 18px;",
+                        ),
+                        ui.tags.p(
+                            "For each category: ",
+                            ui.tags.code(
+                                "weighted_z = ((player_per_game − drop_per_game) / "
+                                "roster_sigma) × status_weight",
+                                style=(
+                                    "background:#eef4fa;padding:1px 5px;"
+                                    "border-radius:3px;font-size:0.72rem;"
+                                ),
+                            ),
+                            (
+                                ". Rates come from season-to-date "
+                                "fact_player_stats_daily. Hitters skip pitching categories "
+                                "and vice versa. The drop baseline is the player the "
+                                "recommender would bench for them, so score answers: "
+                            ),
+                            ui.tags.em(
+                                "how much better is this pickup than my worst roster spot?"
+                            ),
+                            style="margin:4px 0;font-size:0.76rem;color:#132747;",
+                        ),
+                        ui.tags.p(
+                            ui.tags.strong("Fit"),
+                            " is the same calculation but sums only the flippable / "
+                            "toss-up categories. ",
+                            ui.tags.em("Score"),
+                            " tells you who is objectively the best available bat or arm; ",
+                            ui.tags.em("Fit"),
+                            " tells you who most directly closes the gaps in your "
+                            "current matchup. When they disagree, trust ",
+                            ui.tags.em("Fit"),
+                            " for this week's moves and ",
+                            ui.tags.em("Score"),
+                            " for long-term pickups.",
+                            style="margin:4px 0;font-size:0.76rem;color:#132747;",
+                        ),
+                        ui.tags.p(
+                            ui.tags.strong("⬆ badge"),
+                            " = recent MLB call-up. ",
+                            ui.tags.strong("Streak badge"),
+                            " uses the last 7 days (hitters) or 10 days (pitchers) "
+                            "of stats — 🔥 Hot means ≥ 2 of 4 hot conditions met.",
+                            style="margin:4px 0;font-size:0.76rem;color:#132747;",
+                        ),
+                        style=(
+                            "background:#f4f8fc;border:1px solid #d6e4f0;"
+                            "border-radius:4px;padding:10px 14px;margin-bottom:8px;"
+                        ),
+                    ),
+                    style="margin-bottom:8px;",
                 ),
                 # Filter toolbar
                 ui.layout_columns(
