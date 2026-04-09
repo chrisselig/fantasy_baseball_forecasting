@@ -843,6 +843,82 @@ class TestParsers:
         assert isinstance(df, pd.DataFrame)
         assert "matchup_id" in df.columns
 
+    def test_parse_matchup_response_dict_style_team(self) -> None:
+        """Yahoo may return 'team' as a dict instead of a list."""
+        data = {
+            "fantasy_content": {
+                "team": {
+                    "team_key": "469.l.87941.t.10",
+                    "matchups": {
+                        "0": {
+                            "matchup": {
+                                "week": "3",
+                                "week_start": "2026-04-06",
+                                "teams": {
+                                    "0": {
+                                        "team": [
+                                            [{"team_key": "469.l.87941.t.10"}],
+                                            {"team_stats": {"stats": []}},
+                                        ]
+                                    },
+                                    "1": {
+                                        "team": [
+                                            [{"team_key": "469.l.87941.t.5"}],
+                                            {"team_stats": {"stats": []}},
+                                        ]
+                                    },
+                                    "count": 2,
+                                },
+                            }
+                        },
+                        "count": 1,
+                    },
+                }
+            }
+        }
+        df = _parse_matchup_response(data, league_key="469.l.87941")
+        assert len(df) == 1
+        assert df.iloc[0]["team_id_home"] == "469.l.87941.t.10"
+        assert df.iloc[0]["team_id_away"] == "469.l.87941.t.5"
+
+    def test_parse_matchup_response_teams_as_list(self) -> None:
+        """Yahoo may return 'teams' as a list instead of a dict."""
+        data = {
+            "fantasy_content": {
+                "team": [
+                    [{"team_key": "469.l.87941.t.10"}],
+                    {
+                        "matchups": {
+                            "0": {
+                                "matchup": {
+                                    "week": "3",
+                                    "week_start": "2026-04-06",
+                                    "teams": [
+                                        {
+                                            "team": [
+                                                [{"team_key": "469.l.87941.t.10"}],
+                                                {"team_stats": {"stats": []}},
+                                            ]
+                                        },
+                                        {
+                                            "team": [
+                                                [{"team_key": "469.l.87941.t.5"}],
+                                                {"team_stats": {"stats": []}},
+                                            ]
+                                        },
+                                    ],
+                                }
+                            },
+                            "count": 1,
+                        }
+                    },
+                ]
+            }
+        }
+        df = _parse_matchup_response(data, league_key="469.l.87941")
+        assert len(df) == 1
+        assert df.iloc[0]["team_id_home"] == "469.l.87941.t.10"
+
     def test_parse_free_agents_response_empty_data(self) -> None:
         df = _parse_free_agents_response({})
         assert isinstance(df, pd.DataFrame)
