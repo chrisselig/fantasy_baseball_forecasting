@@ -467,8 +467,11 @@ def _step_run_analysis(
     opp_proj_df = _query_projections(conn, opp_roster_df, today, week)
 
     # ── 5. Project week totals and score categories ───────────────────────────
-    my_totals = project_week_totals(my_stats_df, my_proj_df)
-    opp_totals = project_week_totals(opp_stats_df, opp_proj_df)
+    week_end = week_start + datetime.timedelta(days=6)
+    days_remaining = max(0, (week_end - today).days)
+
+    my_totals = project_week_totals(my_stats_df, my_proj_df, days_remaining)
+    opp_totals = project_week_totals(opp_stats_df, opp_proj_df, days_remaining)
 
     # Aggregate to team-level (one row each)
     my_team_totals = _aggregate_to_team(my_totals)
