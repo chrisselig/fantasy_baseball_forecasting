@@ -475,7 +475,7 @@ class TestGetCurrentMatchup:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/423.l.87941.t.1/matchups",
+            BASE + "team/423.l.87941.t.1/matchups;out=teams",
             status=200,
             json=_matchup_json(),
         )
@@ -501,7 +501,7 @@ class TestGetCurrentMatchup:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/423.l.87941.t.1/matchups",
+            BASE + "team/423.l.87941.t.1/matchups;out=teams",
             status=200,
             json=_matchup_json(),
         )
