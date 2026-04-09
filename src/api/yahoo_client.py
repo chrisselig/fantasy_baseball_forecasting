@@ -581,6 +581,60 @@ def _parse_all_rosters_response(data: dict[str, Any], week: int) -> pd.DataFrame
     return pd.concat(frames, ignore_index=True)
 
 
+def _extract_team_items(teams_data: Any) -> list[tuple[str, Any]]:
+    """Normalise Yahoo ``teams`` value into a list of (key, entry) pairs.
+
+    Yahoo may send teams as:
+    * A dict: ``{"0": {…}, "1": {…}, "count": 2}``
+    * A list: ``[{…}, {…}]``
+    """
+    if isinstance(teams_data, dict):
+        return [
+            (tk, tv)
+            for tk, tv in teams_data.items()
+            if tk != "count" and isinstance(tv, dict)
+        ]
+    if isinstance(teams_data, list):
+        return [(str(i), tv) for i, tv in enumerate(teams_data) if isinstance(tv, dict)]
+    return []
+
+
+def _extract_team_key(team: Any) -> str:
+    """Pull the team_key string out of a Yahoo team array.
+
+    The ``team`` value is typically a list where element 0 is a metadata
+    list of dicts, e.g. ``[[{"team_key": "…"}, …], …]``.
+    """
+    if not isinstance(team, list) or not team:
+        return ""
+    meta = team[0]
+    items = meta if isinstance(meta, list) else [meta]
+    for item in items:
+        if isinstance(item, dict) and "team_key" in item:
+            return str(item["team_key"])
+    return ""
+
+
+def _extract_team_stats(team: Any) -> list[Any]:
+    """Pull the stats list from a Yahoo team array.
+
+    Yahoo structures the stats at one of these paths:
+    * ``team[1]["team_stats"]["stats"]``   (most common)
+    * ``team[1]["team_points"]["total"]``  (alternate representation)
+    """
+    stats = _safe_get(team, 1, "team_stats", "stats", default=None)
+    if stats is not None:
+        return list(stats) if isinstance(stats, list) else []
+    # Some responses nest stats differently
+    for idx in range(1, min(len(team) if isinstance(team, list) else 0, 4)):
+        elem = team[idx]
+        if isinstance(elem, dict):
+            inner = elem.get("team_stats", {})
+            if isinstance(inner, dict) and "stats" in inner:
+                return list(inner["stats"])
+    return []
+
+
 def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFrame:
     """Parse matchup response into the fact_matchups shape.
 
@@ -637,58 +691,71 @@ def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFra
 
         league_id = int(league_key.split(".")[-1])
 
+        _logged_sample = False  # Log first entry structure once for debugging
         for _k, matchup_entry in matchups.items():
             if _k == "count":
                 continue
             if not isinstance(matchup_entry, dict):
                 continue
+
+            # Yahoo may wrap the matchup data as:
+            #   {"matchup": {...}}  (expected)
+            # or the matchup_entry itself may BE the matchup data.
             matchup = matchup_entry.get("matchup", {})
             if not matchup:
-                continue
+                # Try treating the entry itself as the matchup
+                if "week" in matchup_entry or "teams" in matchup_entry:
+                    matchup = matchup_entry
+                else:
+                    if not _logged_sample:
+                        logger.warning(
+                            "Matchup entry %s has no 'matchup' key. Keys present: %s",
+                            _k,
+                            list(matchup_entry.keys())[:10],
+                        )
+                        _logged_sample = True
+                    continue
 
             week_number = int(matchup.get("week", 0))
             season = int(matchup.get("week_start", "2026-01-01")[:4])
 
             teams_data = matchup.get("teams", {})
+
+            # Log the first matchup's structure for debugging
+            if not _logged_sample:
+                logger.info(
+                    "Sample matchup (week %d): entry_keys=%s, "
+                    "matchup_keys=%s, teams_type=%s, teams_keys=%s",
+                    week_number,
+                    list(matchup_entry.keys())[:8],
+                    list(matchup.keys())[:8],
+                    type(teams_data).__name__,
+                    (
+                        list(teams_data.keys())[:5]
+                        if isinstance(teams_data, dict)
+                        else f"len={len(teams_data)}"
+                        if isinstance(teams_data, list)
+                        else "n/a"
+                    ),
+                )
+                _logged_sample = True
+
             team_keys: list[str] = []
             team_stats: list[dict[str, Any]] = []
 
             # Yahoo may return teams as a dict {"0": {…}, "1": {…}, "count": N}
             # or as a list [{…}, {…}].
-            team_items: list[tuple[str, Any]]
-            if isinstance(teams_data, dict):
-                team_items = [
-                    (tk, tv)
-                    for tk, tv in teams_data.items()
-                    if tk != "count" and isinstance(tv, dict)
-                ]
-            elif isinstance(teams_data, list):
-                team_items = [
-                    (str(i), tv)
-                    for i, tv in enumerate(teams_data)
-                    if isinstance(tv, dict)
-                ]
-            else:
-                logger.warning(
-                    "Matchup week %d teams_data is %s, skipping.",
-                    week_number,
-                    type(teams_data).__name__,
-                )
-                continue
+            team_items: list[tuple[str, Any]] = _extract_team_items(teams_data)
 
             for _tk, team_entry in team_items:
                 team = team_entry.get("team", [])
                 if not team:
                     continue
-                team_meta: list[Any] = team[0] if isinstance(team, list) else []
-                tkey = ""
-                for item in team_meta if isinstance(team_meta, list) else [team_meta]:
-                    if isinstance(item, dict) and "team_key" in item:
-                        tkey = item["team_key"]
-                        break
+
+                tkey = _extract_team_key(team)
                 team_keys.append(tkey)
 
-                stats_raw = _safe_get(team, 1, "team_stats", "stats", default=[])
+                stats_raw = _extract_team_stats(team)
                 stats_dict: dict[str, float] = {}
                 for stat_entry in stats_raw:
                     if isinstance(stat_entry, dict):
@@ -704,9 +771,10 @@ def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFra
 
             if len(team_keys) < 2:
                 logger.debug(
-                    "Matchup week %d has %d team keys, need 2. Skipping.",
+                    "Matchup week %d has %d team keys (%s), need 2. Skipping.",
                     week_number,
                     len(team_keys),
+                    team_keys,
                 )
                 continue
 
