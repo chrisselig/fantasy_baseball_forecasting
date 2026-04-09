@@ -254,26 +254,42 @@ _YAHOO_STAT_MAP_AWAY: dict[str, str] = {
 }
 
 
-def _load_yahoo_matchup_stats() -> dict[str, dict[str, float]]:
+def _load_yahoo_matchup_stats(week: int | None = None) -> dict[str, dict[str, float]]:
     """Load actual weekly stats from Yahoo scoreboard (fact_matchups).
 
+    Args:
+        week: If provided, load stats for that specific week.
+              If None, load the most recent week.
+
     Returns a dict ``{"mine": {cat: val, ...}, "opp": {cat: val, ...}}``.
-    Values come directly from Yahoo's scoreboard for the current week.
     """
     empty: dict[str, dict[str, float]] = {"mine": {}, "opp": {}}
     try:
         team_key = _get_my_team_key()
         with managed_connection() as conn:
-            row = conn.execute(
-                f"""
-                SELECT *
-                FROM {FACT_MATCHUPS}
-                WHERE (team_id_home = ? OR team_id_away = ?)
-                ORDER BY week_number DESC
-                LIMIT 1
-            """,
-                [team_key, team_key],
-            ).fetchone()
+            if week is not None:
+                row = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM {FACT_MATCHUPS}
+                    WHERE (team_id_home = ? OR team_id_away = ?)
+                      AND week_number = ?
+                    ORDER BY week_number DESC
+                    LIMIT 1
+                """,
+                    [team_key, team_key, week],
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM {FACT_MATCHUPS}
+                    WHERE (team_id_home = ? OR team_id_away = ?)
+                    ORDER BY week_number DESC
+                    LIMIT 1
+                """,
+                    [team_key, team_key],
+                ).fetchone()
             if not row:
                 return empty
             cols = [
@@ -375,16 +391,50 @@ def _empty_roster_df() -> pd.DataFrame:
     return pd.DataFrame(columns=_EMPTY_ROSTER_COLS)
 
 
-def _load_daily_report() -> dict[str, Any]:
-    """Load the most recent pre-built report from MotherDuck."""
+def _load_available_weeks() -> dict[str, str]:
+    """Return ``{week_number_str: label, ...}`` for all weeks with reports."""
+    weeks: dict[str, str] = {"latest": "Latest"}
     try:
         with managed_connection() as conn:
-            result = conn.execute(f"""
-                SELECT report_json
+            rows = conn.execute(f"""
+                SELECT DISTINCT week_number
                 FROM {FACT_DAILY_REPORTS}
-                ORDER BY report_date DESC
-                LIMIT 1
-            """).fetchone()
+                ORDER BY week_number DESC
+            """).fetchall()
+            for (wk,) in rows:
+                weeks[str(wk)] = f"Week {wk}"
+    except (duckdb.Error, Exception) as exc:
+        logger.warning("Could not load available weeks: %s", exc)
+    return weeks
+
+
+def _load_daily_report(week: int | None = None) -> dict[str, Any]:
+    """Load a pre-built report from MotherDuck.
+
+    Args:
+        week: If provided, load the latest report for that week.
+              If None, load the most recent report overall.
+    """
+    try:
+        with managed_connection() as conn:
+            if week is not None:
+                result = conn.execute(
+                    f"""
+                    SELECT report_json
+                    FROM {FACT_DAILY_REPORTS}
+                    WHERE week_number = ?
+                    ORDER BY report_date DESC
+                    LIMIT 1
+                """,
+                    [week],
+                ).fetchone()
+            else:
+                result = conn.execute(f"""
+                    SELECT report_json
+                    FROM {FACT_DAILY_REPORTS}
+                    ORDER BY report_date DESC
+                    LIMIT 1
+                """).fetchone()
             if result and result[0]:
                 return dict(json.loads(str(result[0])))
     except (duckdb.Error, Exception) as exc:
@@ -646,10 +696,28 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             )
         return ui.div()
 
+    # Populate available weeks on startup and refresh
+    @reactive.effect
+    def _populate_week_choices() -> None:
+        _refresh_counter()
+        weeks = _load_available_weeks()
+        ui.update_select("week_select", choices=weeks, selected="latest")
+
+    @reactive.calc
+    def selected_week() -> int | None:
+        """Return the selected week number, or None for 'latest'."""
+        val = str(input.week_select())
+        if val == "latest":
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
+
     @reactive.calc
     def daily_report() -> dict[str, Any]:
         _refresh_counter()
-        return _load_daily_report()
+        return _load_daily_report(selected_week())
 
     @reactive.calc
     def matchup_data() -> pd.DataFrame:
@@ -857,7 +925,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     @render.ui
     def matchup_scoreboard_ui() -> Tag:
         df = matchup_data()
-        yahoo = _load_yahoo_matchup_stats()
+        yahoo = _load_yahoo_matchup_stats(selected_week())
         if df.empty and not yahoo["mine"]:
             return ui.p(
                 "No matchup data available.", style="padding:0.5rem;color:#666;"
