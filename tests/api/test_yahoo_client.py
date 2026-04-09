@@ -23,6 +23,7 @@ from src.api.yahoo_client import (
     _parse_matchup_response,
     _parse_player_details,
     _parse_roster_response,
+    _parse_scoreboard_response,
     _parse_standings_response,
     _parse_transactions_response,
 )
@@ -358,106 +359,109 @@ class TestGetAllRosters:
 # ── get_current_matchup tests ─────────────────────────────────────────────────
 
 
-def _matchup_json() -> dict:  # type: ignore[type-arg]
+def _scoreboard_json() -> dict:  # type: ignore[type-arg]
+    """Minimal Yahoo league scoreboard JSON with one matchup."""
     return {
         "fantasy_content": {
-            "team": [
-                [{"team_key": "423.l.87941.t.1"}],
+            "league": [
+                [{"league_key": "423.l.87941", "league_id": "87941"}],
                 {
-                    "matchups": {
-                        "0": {
-                            "matchup": {
-                                "week": "1",
-                                "week_start": "2026-04-07",
-                                "status": "postevent",
-                                "teams": {
-                                    "0": {
-                                        "team": [
-                                            [{"team_key": "423.l.87941.t.1"}],
-                                            {
-                                                "team_stats": {
-                                                    "stats": [
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "7",
-                                                                "value": "42",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "12",
-                                                                "value": "8",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "28",
-                                                                "value": "3",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "42",
-                                                                "value": "55",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "48",
-                                                                "value": "1.18",
-                                                            }
-                                                        },
-                                                    ]
-                                                }
-                                            },
-                                        ]
+                    "scoreboard": {
+                        "matchups": {
+                            "0": {
+                                "matchup": {
+                                    "week": "1",
+                                    "week_start": "2026-04-07",
+                                    "status": "postevent",
+                                    "teams": {
+                                        "0": {
+                                            "team": [
+                                                [{"team_key": "423.l.87941.t.1"}],
+                                                {
+                                                    "team_stats": {
+                                                        "stats": [
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "7",
+                                                                    "value": "42",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "12",
+                                                                    "value": "8",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "28",
+                                                                    "value": "3",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "42",
+                                                                    "value": "55",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "48",
+                                                                    "value": "1.18",
+                                                                }
+                                                            },
+                                                        ]
+                                                    }
+                                                },
+                                            ]
+                                        },
+                                        "1": {
+                                            "team": [
+                                                [{"team_key": "423.l.87941.t.2"}],
+                                                {
+                                                    "team_stats": {
+                                                        "stats": [
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "7",
+                                                                    "value": "38",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "12",
+                                                                    "value": "9",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "28",
+                                                                    "value": "2",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "42",
+                                                                    "value": "48",
+                                                                }
+                                                            },
+                                                            {
+                                                                "stat": {
+                                                                    "stat_id": "48",
+                                                                    "value": "1.32",
+                                                                }
+                                                            },
+                                                        ]
+                                                    }
+                                                },
+                                            ]
+                                        },
+                                        "count": 2,
                                     },
-                                    "1": {
-                                        "team": [
-                                            [{"team_key": "423.l.87941.t.2"}],
-                                            {
-                                                "team_stats": {
-                                                    "stats": [
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "7",
-                                                                "value": "38",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "12",
-                                                                "value": "9",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "28",
-                                                                "value": "2",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "42",
-                                                                "value": "48",
-                                                            }
-                                                        },
-                                                        {
-                                                            "stat": {
-                                                                "stat_id": "48",
-                                                                "value": "1.32",
-                                                            }
-                                                        },
-                                                    ]
-                                                }
-                                            },
-                                        ]
-                                    },
-                                    "count": 2,
-                                },
-                            }
-                        },
-                        "count": 1,
+                                }
+                            },
+                            "count": 1,
+                        }
                     }
                 },
             ]
@@ -471,13 +475,12 @@ class TestGetCurrentMatchup:
         self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("YAHOO_LEAGUE_ID", "87941")
-        monkeypatch.setenv("YAHOO_TEAM_ID", "1")
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/423.l.87941.t.1/matchups;out=teams",
+            BASE + "league/423.l.87941/scoreboard",
             status=200,
-            json=_matchup_json(),
+            json=_scoreboard_json(),
         )
 
         df = client.get_current_matchup()
@@ -497,18 +500,35 @@ class TestGetCurrentMatchup:
         self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("YAHOO_LEAGUE_ID", "87941")
-        monkeypatch.setenv("YAHOO_TEAM_ID", "1")
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "team/423.l.87941.t.1/matchups;out=teams",
+            BASE + "league/423.l.87941/scoreboard",
             status=200,
-            json=_matchup_json(),
+            json=_scoreboard_json(),
         )
 
         df = client.get_current_matchup()
         for col in ("h_home", "h_away", "hr_home", "whip_home", "whip_away"):
             assert col in df.columns, f"Missing column: {col}"
+
+    @responses_lib.activate
+    def test_returns_all_league_matchups(
+        self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("YAHOO_LEAGUE_ID", "87941")
+
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "league/423.l.87941/scoreboard",
+            status=200,
+            json=_scoreboard_json(),
+        )
+
+        df = client.get_current_matchup()
+        assert len(df) == 1
+        assert df.iloc[0]["team_id_home"] == "423.l.87941.t.1"
+        assert df.iloc[0]["team_id_away"] == "423.l.87941.t.2"
 
 
 # ── get_free_agents tests ─────────────────────────────────────────────────────
@@ -843,81 +863,18 @@ class TestParsers:
         assert isinstance(df, pd.DataFrame)
         assert "matchup_id" in df.columns
 
-    def test_parse_matchup_response_dict_style_team(self) -> None:
-        """Yahoo may return 'team' as a dict instead of a list."""
-        data = {
-            "fantasy_content": {
-                "team": {
-                    "team_key": "469.l.87941.t.10",
-                    "matchups": {
-                        "0": {
-                            "matchup": {
-                                "week": "3",
-                                "week_start": "2026-04-06",
-                                "teams": {
-                                    "0": {
-                                        "team": [
-                                            [{"team_key": "469.l.87941.t.10"}],
-                                            {"team_stats": {"stats": []}},
-                                        ]
-                                    },
-                                    "1": {
-                                        "team": [
-                                            [{"team_key": "469.l.87941.t.5"}],
-                                            {"team_stats": {"stats": []}},
-                                        ]
-                                    },
-                                    "count": 2,
-                                },
-                            }
-                        },
-                        "count": 1,
-                    },
-                }
-            }
-        }
-        df = _parse_matchup_response(data, league_key="469.l.87941")
-        assert len(df) == 1
-        assert df.iloc[0]["team_id_home"] == "469.l.87941.t.10"
-        assert df.iloc[0]["team_id_away"] == "469.l.87941.t.5"
+    def test_parse_scoreboard_response_empty_data(self) -> None:
+        df = _parse_scoreboard_response({}, league_key="423.l.87941")
+        assert isinstance(df, pd.DataFrame)
+        assert "matchup_id" in df.columns
 
-    def test_parse_matchup_response_teams_as_list(self) -> None:
-        """Yahoo may return 'teams' as a list instead of a dict."""
-        data = {
-            "fantasy_content": {
-                "team": [
-                    [{"team_key": "469.l.87941.t.10"}],
-                    {
-                        "matchups": {
-                            "0": {
-                                "matchup": {
-                                    "week": "3",
-                                    "week_start": "2026-04-06",
-                                    "teams": [
-                                        {
-                                            "team": [
-                                                [{"team_key": "469.l.87941.t.10"}],
-                                                {"team_stats": {"stats": []}},
-                                            ]
-                                        },
-                                        {
-                                            "team": [
-                                                [{"team_key": "469.l.87941.t.5"}],
-                                                {"team_stats": {"stats": []}},
-                                            ]
-                                        },
-                                    ],
-                                }
-                            },
-                            "count": 1,
-                        }
-                    },
-                ]
-            }
-        }
-        df = _parse_matchup_response(data, league_key="469.l.87941")
+    def test_parse_scoreboard_response_parses_matchup(self) -> None:
+        df = _parse_scoreboard_response(_scoreboard_json(), league_key="423.l.87941")
         assert len(df) == 1
-        assert df.iloc[0]["team_id_home"] == "469.l.87941.t.10"
+        assert df.iloc[0]["team_id_home"] == "423.l.87941.t.1"
+        assert df.iloc[0]["team_id_away"] == "423.l.87941.t.2"
+        assert df.iloc[0]["h_home"] == 42.0
+        assert df.iloc[0]["h_away"] == 38.0
 
     def test_parse_free_agents_response_empty_data(self) -> None:
         df = _parse_free_agents_response({})
