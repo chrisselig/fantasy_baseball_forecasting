@@ -755,6 +755,13 @@ def get_season_stats_for_projections(
             logger.debug("Season stats failed for mlb_id=%d: %s", mlb_id, exc)
             continue
 
+        # Collect hitting and pitching stats separately, then merge
+        # into one row per player. This avoids confusing pitching-group
+        # fields (hits = hits allowed, atBats = batters faced) with
+        # batting stats.
+        hit_row: dict[str, Any] | None = None
+        pitch_row: dict[str, Any] | None = None
+
         for group in data.get("stats", []):
             splits = group.get("splits", [])
             if not splits:
@@ -764,18 +771,16 @@ def get_season_stats_for_projections(
             if games == 0:
                 continue
 
-            row: dict[str, Any] = {
-                "mlb_id": mlb_id,
-                "fg_id": None,
-                "games_played": games,
-                "source": "mlb_pace",
-            }
+            group_name = group.get("group", {}).get("displayName", "").lower()
 
-            # Batting stats
-            ab = stat.get("atBats")
-            if ab is not None and ab > 0:
-                row.update(
-                    {
+            if group_name == "hitting":
+                ab = stat.get("atBats")
+                if ab is not None and ab > 0:
+                    hit_row = {
+                        "mlb_id": mlb_id,
+                        "fg_id": None,
+                        "games_played": games,
+                        "source": "mlb_pace",
                         "proj_ab": ab,
                         "proj_h": stat.get("hits", 0),
                         "proj_hr": stat.get("homeRuns", 0),
@@ -786,23 +791,25 @@ def get_season_stats_for_projections(
                         "proj_ops": stat.get("ops"),
                         "proj_fpct": stat.get("fielding"),
                     }
-                )
 
-            # Pitching stats
-            ip_str = stat.get("inningsPitched")
-            if ip_str is not None:
-                try:
-                    ip = float(ip_str)
-                except (ValueError, TypeError):
-                    ip = 0.0
-                if ip > 0:
-                    k = stat.get("strikeOuts", 0)
-                    bb = stat.get("baseOnBalls", 0)
-                    h_allowed = stat.get("hits", 0)
-                    sv = stat.get("saves", 0)
-                    hld = stat.get("holds", 0)
-                    row.update(
-                        {
+            elif group_name == "pitching":
+                ip_str = stat.get("inningsPitched")
+                if ip_str is not None:
+                    try:
+                        ip = float(ip_str)
+                    except (ValueError, TypeError):
+                        ip = 0.0
+                    if ip > 0:
+                        k = stat.get("strikeOuts", 0)
+                        bb = stat.get("baseOnBalls", 0)
+                        h_allowed = stat.get("hits", 0)
+                        sv = stat.get("saves", 0)
+                        hld = stat.get("holds", 0)
+                        pitch_row = {
+                            "mlb_id": mlb_id,
+                            "fg_id": None,
+                            "games_played": games,
+                            "source": "mlb_pace",
                             "proj_ip": ip,
                             "proj_w": stat.get("wins", 0),
                             "proj_k": k,
@@ -812,9 +819,41 @@ def get_season_stats_for_projections(
                             "proj_whip": stat.get("whip"),
                             "proj_k_bb": k / bb if bb > 0 else None,
                         }
-                    )
 
-            rows.append(row)
+        # Merge hitting + pitching into one row. For two-way players,
+        # pre-convert each group to per-game rates using their respective
+        # games_played so the later bulk conversion doesn't mix them up.
+        if hit_row and pitch_row:
+            hit_gp = max(hit_row["games_played"], 1)
+            pitch_gp = max(pitch_row["games_played"], 1)
+            combined: dict[str, Any] = {
+                "mlb_id": mlb_id,
+                "fg_id": None,
+                "games_played": 1,  # rates already per-game
+                "source": "mlb_pace",
+            }
+            rate_exclusions = {
+                "proj_avg",
+                "proj_ops",
+                "proj_fpct",
+                "proj_whip",
+                "proj_k_bb",
+            }
+            for k, v in hit_row.items():
+                if k.startswith("proj_") and k not in rate_exclusions:
+                    combined[k] = (v or 0) / hit_gp
+                elif k.startswith("proj_"):
+                    combined[k] = v
+            for k, v in pitch_row.items():
+                if k.startswith("proj_") and k not in rate_exclusions:
+                    combined[k] = (v or 0) / pitch_gp
+                elif k.startswith("proj_"):
+                    combined[k] = v
+            rows.append(combined)
+        elif hit_row:
+            rows.append(hit_row)
+        elif pitch_row:
+            rows.append(pitch_row)
 
     if not rows:
         return _empty_df(_PROJECTIONS_COLUMNS)

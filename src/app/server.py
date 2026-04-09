@@ -400,12 +400,19 @@ def _load_available_weeks() -> dict[str, str]:
     weeks: dict[str, str] = {"latest": "Latest"}
     try:
         with managed_connection() as conn:
-            rows = conn.execute(f"""
+            import datetime as _dt
+
+            current_season = _dt.date.today().year
+            rows = conn.execute(
+                f"""
                 SELECT DISTINCT week_number
                 FROM {FACT_DAILY_REPORTS}
                 WHERE week_number BETWEEN 1 AND 26
+                  AND season = ?
                 ORDER BY week_number ASC
-            """).fetchall()
+            """,
+                [current_season],
+            ).fetchall()
             for (wk,) in rows:
                 weeks[str(wk)] = f"Week {wk}"
     except (duckdb.Error, Exception) as exc:
