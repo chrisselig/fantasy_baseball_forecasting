@@ -608,6 +608,47 @@ class TestGetStatCategories:
         result2 = client.get_stat_categories()
         assert result1 is result2
 
+    @responses_lib.activate
+    def test_parses_numeric_key_stat_categories(
+        self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Yahoo sometimes returns stat_categories.stats as a dict with numeric keys."""
+        monkeypatch.setenv("YAHOO_LEAGUE_ID", "87941")
+
+        alt_json = {
+            "fantasy_content": {
+                "league": [
+                    [{"league_key": "423.l.87941"}],
+                    {
+                        "settings": {
+                            "stat_categories": {
+                                "stats": {
+                                    "0": {
+                                        "stat": {"stat_id": "60", "display_name": "H"}
+                                    },
+                                    "1": {
+                                        "stat": {"stat_id": "12", "display_name": "HR"}
+                                    },
+                                    "count": 2,
+                                }
+                            }
+                        }
+                    },
+                ]
+            }
+        }
+
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "league/423.l.87941/settings",
+            status=200,
+            json=alt_json,
+        )
+
+        categories = client.get_stat_categories()
+        assert categories["60"] == "H"
+        assert categories["12"] == "HR"
+
 
 class TestSetStatIdMapping:
     def test_builds_column_mapping(self) -> None:

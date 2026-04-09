@@ -314,20 +314,79 @@ class YahooClient:
         mapping: dict[str, str] = {}
         try:
             league = _safe_get(data, "fantasy_content", "league", default=[])
-            # league is typically a list: [{meta}, {settings: ...}]
-            settings: dict[str, Any] = {}
-            for item in league:
-                if isinstance(item, dict) and "settings" in item:
-                    settings = item["settings"]
-                    break
 
-            stat_categories = _safe_get(
-                settings, "stat_categories", "stats", default=[]
-            )
-            for entry in stat_categories:
+            # Yahoo nests settings in various ways depending on the endpoint.
+            # Try multiple navigation strategies.
+            settings: dict[str, Any] = {}
+
+            # Strategy 1: league is a list — [{meta}, {"settings": ...}]
+            if isinstance(league, list):
+                for item in league:
+                    if isinstance(item, dict) and "settings" in item:
+                        settings = item["settings"]
+                        break
+
+            # Strategy 2: league is a dict with numeric keys — {"0": [...], "1": {"settings": ...}}
+            if not settings and isinstance(league, dict):
+                for key in sorted(league.keys()):
+                    val = league[key]
+                    if isinstance(val, dict) and "settings" in val:
+                        settings = val["settings"]
+                        break
+
+            # Strategy 3: settings might be nested one level deeper
+            if not settings:
+                settings = _safe_get(
+                    data, "fantasy_content", "league", 1, "settings", default={}
+                )
+
+            if not settings:
+                logger.warning(
+                    "Could not find 'settings' in league response. "
+                    "Top-level keys: %s, league type: %s",
+                    list(data.get("fantasy_content", {}).keys())
+                    if isinstance(data.get("fantasy_content"), dict)
+                    else "N/A",
+                    type(league).__name__,
+                )
+                if isinstance(league, list) and len(league) > 1:
+                    logger.warning(
+                        "league[1] type=%s keys=%s",
+                        type(league[1]).__name__,
+                        list(league[1].keys())
+                        if isinstance(league[1], dict)
+                        else "N/A",
+                    )
+
+            # Navigate to stat_categories → stats
+            stat_categories: list[Any] = []
+            if isinstance(settings, dict):
+                stat_categories = _safe_get(
+                    settings, "stat_categories", "stats", default=[]
+                )
+            elif isinstance(settings, list):
+                # settings might be a list of dicts
+                for item in settings:
+                    if isinstance(item, dict) and "stat_categories" in item:
+                        stat_categories = _safe_get(
+                            item, "stat_categories", "stats", default=[]
+                        )
+                        break
+
+            # Handle stat_categories as dict with numeric keys
+            if isinstance(stat_categories, dict):
+                entries = [
+                    v
+                    for k, v in stat_categories.items()
+                    if k != "count" and isinstance(v, dict)
+                ]
+            else:
+                entries = stat_categories
+
+            for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                stat = entry.get("stat", {})
+                stat = entry.get("stat", entry)
                 sid = str(stat.get("stat_id", ""))
                 display = stat.get("display_name", "")
                 if sid and display:
@@ -782,7 +841,9 @@ def _build_matchup_row(
     return row
 
 
-# Hardcoded fallback stat IDs (may not match all leagues).
+# Hardcoded fallback stat IDs for the Vlad Guerrero Invitational league.
+# Derived from Yahoo API response stat IDs observed on 2026-04-09:
+#   3, 8, 12, 16, 18, 27, 28, 42, 50, 54, 55, 56, 60, 89
 _FALLBACK_STAT_IDS: dict[str, str] = {
     "60": "h",
     "12": "hr",
@@ -790,12 +851,12 @@ _FALLBACK_STAT_IDS: dict[str, str] = {
     "18": "bb",
     "3": "avg",
     "55": "ops",
-    "61": "fpct",
+    "50": "fpct",
     "28": "w",
     "42": "k",
-    "26": "whip",
-    "58": "k_bb",
-    "57": "sv_h",
+    "27": "whip",
+    "56": "k_bb",
+    "54": "sv_h",
 }
 
 
