@@ -295,6 +295,55 @@ class YahooClient:
         team_id = os.environ.get("YAHOO_TEAM_ID", "10")
         return f"{self._league_key()}.t.{team_id}"
 
+    # ── League settings / stat categories ─────────────────────────────────────
+
+    def get_stat_categories(self) -> dict[str, str]:
+        """Fetch the league's stat category ID → display name mapping.
+
+        Queries ``league/{key}/settings`` and returns e.g.
+        ``{"60": "H", "12": "HR", ...}``.
+
+        The result is cached for the lifetime of the client instance.
+        """
+        if hasattr(self, "_cached_stat_categories"):
+            return self._cached_stat_categories
+
+        league_key = self._league_key()
+        data = self._get(f"league/{league_key}/settings")
+
+        mapping: dict[str, str] = {}
+        try:
+            league = _safe_get(data, "fantasy_content", "league", default=[])
+            # league is typically a list: [{meta}, {settings: ...}]
+            settings: dict[str, Any] = {}
+            for item in league:
+                if isinstance(item, dict) and "settings" in item:
+                    settings = item["settings"]
+                    break
+
+            stat_categories = _safe_get(
+                settings, "stat_categories", "stats", default=[]
+            )
+            for entry in stat_categories:
+                if not isinstance(entry, dict):
+                    continue
+                stat = entry.get("stat", {})
+                sid = str(stat.get("stat_id", ""))
+                display = stat.get("display_name", "")
+                if sid and display:
+                    mapping[sid] = display
+
+            logger.info(
+                "Fetched %d stat categories from Yahoo: %s",
+                len(mapping),
+                mapping,
+            )
+        except Exception as exc:
+            logger.warning("Failed to parse stat categories: %s", exc)
+
+        self._cached_stat_categories: dict[str, str] = mapping
+        return mapping
+
     # ── Roster ────────────────────────────────────────────────────────────────
 
     def get_my_roster(self, week: int) -> pd.DataFrame:
@@ -615,6 +664,44 @@ def _find_teams_in_matchup(matchup: dict[str, Any]) -> Any:
     return {}
 
 
+# Yahoo display_name → DB column prefix mapping.
+# The stat_id numbers vary by league/season, so we resolve them dynamically
+# via ``get_stat_categories()``.  The display names are stable.
+_DISPLAY_NAME_TO_COLUMN: dict[str, str] = {
+    "H": "h",
+    "HR": "hr",
+    "SB": "sb",
+    "BB": "bb",
+    "AVG": "avg",
+    "OPS": "ops",
+    "FPCT": "fpct",
+    "W": "w",
+    "K": "k",
+    "WHIP": "whip",
+    "K/BB": "k_bb",
+    "SV+H": "sv_h",
+}
+
+# Module-level cache: stat_id (str) → column prefix (str).
+# Populated by ``set_stat_id_mapping()`` from league settings.
+_stat_id_to_column: dict[str, str] = {}
+
+
+def set_stat_id_mapping(categories: dict[str, str]) -> None:
+    """Build the stat_id → column mapping from Yahoo's stat categories.
+
+    Args:
+        categories: ``{stat_id: display_name, ...}`` from
+                    ``YahooClient.get_stat_categories()``.
+    """
+    _stat_id_to_column.clear()
+    for sid, display_name in categories.items():
+        col = _DISPLAY_NAME_TO_COLUMN.get(display_name)
+        if col:
+            _stat_id_to_column[sid] = col
+    logger.info("Stat ID → column mapping: %s", _stat_id_to_column)
+
+
 def _build_matchup_row(
     matchup: dict[str, Any], league_id: int
 ) -> dict[str, Any] | None:
@@ -657,45 +744,59 @@ def _build_matchup_row(
     home_stats = team_stats[0] if team_stats else {}
     away_stats = team_stats[1] if len(team_stats) > 1 else {}
 
+    # Log all stat IDs on the first matchup so we can diagnose mapping issues
+    if home_stats:
+        logger.info(
+            "Home team stat IDs present: %s",
+            sorted(home_stats.keys(), key=lambda x: int(x)),
+        )
+
     matchup_id = f"{league_id}_{season}_W{week_number:02d}_{home_key}vs{away_key}"
 
-    return {
+    row: dict[str, Any] = {
         "matchup_id": matchup_id,
         "league_id": league_id,
         "week_number": week_number,
         "season": season,
         "team_id_home": home_key,
         "team_id_away": away_key,
-        # Batter stats
-        "h_home": home_stats.get("7"),
-        "h_away": away_stats.get("7"),
-        "hr_home": home_stats.get("12"),
-        "hr_away": away_stats.get("12"),
-        "sb_home": home_stats.get("16"),
-        "sb_away": away_stats.get("16"),
-        "bb_home": home_stats.get("13"),
-        "bb_away": away_stats.get("13"),
-        "avg_home": home_stats.get("3"),
-        "avg_away": away_stats.get("3"),
-        "ops_home": home_stats.get("55"),
-        "ops_away": away_stats.get("55"),
-        "fpct_home": home_stats.get("23"),
-        "fpct_away": away_stats.get("23"),
-        # Pitcher stats
-        "w_home": home_stats.get("28"),
-        "w_away": away_stats.get("28"),
-        "k_home": home_stats.get("42"),
-        "k_away": away_stats.get("42"),
-        "whip_home": home_stats.get("48"),
-        "whip_away": away_stats.get("48"),
-        "k_bb_home": home_stats.get("26"),
-        "k_bb_away": away_stats.get("26"),
-        "sv_h_home": home_stats.get("57"),
-        "sv_h_away": away_stats.get("57"),
-        "categories_won_home": None,
-        "categories_won_away": None,
-        "result": None,
     }
+
+    # Use dynamic mapping if available, otherwise fall back to defaults
+    sid_map = _stat_id_to_column
+    if not sid_map:
+        logger.warning(
+            "No dynamic stat ID mapping set — using hardcoded fallback. "
+            "Call set_stat_id_mapping() with league categories first."
+        )
+        sid_map = _FALLBACK_STAT_IDS
+
+    for sid, col in sid_map.items():
+        row[f"{col}_home"] = home_stats.get(sid)
+        row[f"{col}_away"] = away_stats.get(sid)
+
+    row["categories_won_home"] = None
+    row["categories_won_away"] = None
+    row["result"] = None
+
+    return row
+
+
+# Hardcoded fallback stat IDs (may not match all leagues).
+_FALLBACK_STAT_IDS: dict[str, str] = {
+    "60": "h",
+    "12": "hr",
+    "16": "sb",
+    "18": "bb",
+    "3": "avg",
+    "55": "ops",
+    "61": "fpct",
+    "28": "w",
+    "42": "k",
+    "26": "whip",
+    "58": "k_bb",
+    "57": "sv_h",
+}
 
 
 def _parse_scoreboard_response(data: dict[str, Any], league_key: str) -> pd.DataFrame:
