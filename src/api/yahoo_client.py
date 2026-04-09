@@ -344,7 +344,7 @@ class YahooClient:
         """
         league_key = self._league_key()
         team_key = self._my_team_key()
-        data = self._get(f"team/{team_key}/matchups")
+        data = self._get(f"team/{team_key}/matchups;out=teams")
         return _parse_matchup_response(data, league_key)
 
     # ── Free agents ───────────────────────────────────────────────────────────
