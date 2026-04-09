@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from src.db.loaders_yahoo import (
+    load_matchups,
     load_players,
     load_rosters,
     load_transactions,
@@ -22,6 +23,7 @@ from src.db.loaders_yahoo import (
 )
 from src.db.schema import (
     DIM_PLAYERS,
+    FACT_MATCHUPS,
     FACT_ROSTERS,
     FACT_TRANSACTIONS,
     FACT_WAIVER_SCORES,
@@ -391,3 +393,109 @@ class TestStageFreeAgents:
         ).fetchone()
         assert row is not None
         assert float(row[0]) == pytest.approx(0.0)
+
+
+# ── load_matchups tests ──────────────────────────────────────────────────────
+
+
+class TestLoadMatchups:
+    def _make_matchup_df(self, rows: int = 1) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "matchup_id": [
+                    f"87941_2026_W{i:02d}_T1vsT2" for i in range(1, rows + 1)
+                ],
+                "league_id": [87941] * rows,
+                "week_number": list(range(1, rows + 1)),
+                "season": [2026] * rows,
+                "team_id_home": ["469.l.87941.t.1"] * rows,
+                "team_id_away": ["469.l.87941.t.2"] * rows,
+                "h_home": [42] * rows,
+                "h_away": [38] * rows,
+                "hr_home": [8] * rows,
+                "hr_away": [9] * rows,
+                "sb_home": [3] * rows,
+                "sb_away": [1] * rows,
+                "bb_home": [15] * rows,
+                "bb_away": [12] * rows,
+                "avg_home": [0.265] * rows,
+                "avg_away": [0.248] * rows,
+                "ops_home": [0.780] * rows,
+                "ops_away": [0.720] * rows,
+                "fpct_home": [0.985] * rows,
+                "fpct_away": [0.980] * rows,
+                "w_home": [3] * rows,
+                "w_away": [2] * rows,
+                "k_home": [55] * rows,
+                "k_away": [48] * rows,
+                "whip_home": [1.18] * rows,
+                "whip_away": [1.32] * rows,
+                "k_bb_home": [3.2] * rows,
+                "k_bb_away": [2.8] * rows,
+                "sv_h_home": [4] * rows,
+                "sv_h_away": [3] * rows,
+                "categories_won_home": [None] * rows,
+                "categories_won_away": [None] * rows,
+                "result": [None] * rows,
+            }
+        )
+
+    def test_inserts_correct_row_count(self, conn: duckdb.DuckDBPyConnection) -> None:
+        df = self._make_matchup_df(rows=2)
+        result = load_matchups(conn, df)
+        assert result == 2
+
+    def test_rows_persisted_in_db(self, conn: duckdb.DuckDBPyConnection) -> None:
+        df = self._make_matchup_df(rows=1)
+        load_matchups(conn, df)
+        count = conn.execute(f"SELECT COUNT(*) FROM {FACT_MATCHUPS}").fetchone()
+        assert count is not None
+        assert count[0] == 1
+
+    def test_idempotent_on_reinsertion(self, conn: duckdb.DuckDBPyConnection) -> None:
+        df = self._make_matchup_df(rows=1)
+        load_matchups(conn, df)
+        load_matchups(conn, df)
+        count = conn.execute(f"SELECT COUNT(*) FROM {FACT_MATCHUPS}").fetchone()
+        assert count is not None
+        assert count[0] == 1
+
+    def test_empty_dataframe_returns_zero(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        empty = pd.DataFrame(columns=["matchup_id"])
+        result = load_matchups(conn, empty)
+        assert result == 0
+
+    def test_missing_matchup_id_returns_zero(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        df = pd.DataFrame({"league_id": [87941]})
+        result = load_matchups(conn, df)
+        assert result == 0
+
+    def test_missing_optional_cols_filled_with_none(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DataFrame without outcome columns should still load successfully."""
+        df = pd.DataFrame(
+            {
+                "matchup_id": ["87941_2026_W01_T1vsT2"],
+                "league_id": [87941],
+                "week_number": [1],
+                "season": [2026],
+                "team_id_home": ["469.l.87941.t.1"],
+                "team_id_away": ["469.l.87941.t.2"],
+                "h_home": [42],
+                "h_away": [38],
+                # Intentionally omit many stat and outcome columns
+            }
+        )
+        result = load_matchups(conn, df)
+        assert result == 1
+        row = conn.execute(
+            f"SELECT categories_won_home, result FROM {FACT_MATCHUPS}"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None  # categories_won_home
+        assert row[1] is None  # result
