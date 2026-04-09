@@ -381,8 +381,7 @@ class YahooClient:
         """
         league_key = self._league_key()
         data = self._get(
-            f"league/{league_key}/transactions",
-            params={"types": "add,drop,trade", "count": 50},
+            f"league/{league_key}/transactions;types=add,drop,trade;count=50",
         )
         return _parse_transactions_response(data, days)
 

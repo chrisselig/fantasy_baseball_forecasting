@@ -647,7 +647,7 @@ class TestGetTransactions:
 
         responses_lib.add(
             responses_lib.GET,
-            BASE + "league/423.l.87941/transactions",
+            BASE + "league/423.l.87941/transactions;types=add,drop,trade;count=50",
             status=200,
             json=_transactions_json(),
         )

@@ -336,6 +336,43 @@ def stage_free_agents(conn: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> int:
     return row_count
 
 
+_MATCHUP_COLS = [
+    "matchup_id",
+    "league_id",
+    "week_number",
+    "season",
+    "team_id_home",
+    "team_id_away",
+    "h_home",
+    "h_away",
+    "hr_home",
+    "hr_away",
+    "sb_home",
+    "sb_away",
+    "bb_home",
+    "bb_away",
+    "avg_home",
+    "avg_away",
+    "ops_home",
+    "ops_away",
+    "fpct_home",
+    "fpct_away",
+    "w_home",
+    "w_away",
+    "k_home",
+    "k_away",
+    "whip_home",
+    "whip_away",
+    "k_bb_home",
+    "k_bb_away",
+    "sv_h_home",
+    "sv_h_away",
+    "categories_won_home",
+    "categories_won_away",
+    "result",
+]
+
+
 def load_matchups(
     conn: duckdb.DuckDBPyConnection,
     df: pd.DataFrame,
@@ -358,12 +395,21 @@ def load_matchups(
         logger.warning("load_matchups: missing matchup_id column.")
         return 0
 
-    conn.register("_matchup_staging", df)
-    conn.execute(
-        f"INSERT OR REPLACE INTO {FACT_MATCHUPS} SELECT * FROM _matchup_staging"
-    )
+    # Ensure all expected columns exist, filling missing ones with None
+    insert_df = df.copy()
+    for col in _MATCHUP_COLS:
+        if col not in insert_df.columns:
+            insert_df[col] = None
+    insert_df = insert_df[_MATCHUP_COLS]
+
+    cols_sql = ", ".join(_MATCHUP_COLS)
+    conn.register("_matchup_staging", insert_df)
+    conn.execute(f"""
+        INSERT OR REPLACE INTO {FACT_MATCHUPS} ({cols_sql})
+        SELECT {cols_sql} FROM _matchup_staging
+    """)
     conn.unregister("_matchup_staging")
 
-    row_count = len(df)
+    row_count = len(insert_df)
     logger.info("load_matchups: upserted %d rows.", row_count)
     return row_count
