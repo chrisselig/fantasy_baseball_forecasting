@@ -90,42 +90,88 @@ app_ui = ui.page_navbar(
         ),
         # Row 3 — Category scoreboard (full width)
         ui.layout_columns(
-            _card("Category Scoreboard", ui.output_ui("matchup_scoreboard_ui")),
+            _card(
+                "Category Scoreboard",
+                _status_legend(),
+                _note(
+                    "Win% is the model's probability that your running total ends"
+                    " higher than your opponent's total by end of the week. "
+                    "Safe Win >= 70% | Leading 50-70% | Toss-Up 35-50% | "
+                    "Trailing 20-35% | Safe Loss < 20%. "
+                    "WHIP and negative stats are scored lowest-wins."
+                ),
+                ui.output_ui("matchup_scoreboard_ui"),
+            ),
             col_widths=[12],
         ),
     ),
     # ── Tab 2: Matchup Detail ─────────────────────────────────────────────
     ui.nav_panel(
         "Matchup Detail",
-        # Category breakdown
+        # Row 1 — Win probability + scenario analysis
         ui.layout_columns(
             _card(
-                "Category Breakdown",
-                _status_legend(),
+                "Match Win Probability",
                 _note(
-                    "Win% is the model's probability that your running total ends"
-                    " higher than your opponent's total by end of the week. "
-                    "Safe Win ≥ 70% | Leading 50–70% | Toss-Up 35–50% | "
-                    "Trailing 20–35% | Safe Loss < 20%. "
-                    "WHIP and negative stats are scored lowest-wins."
+                    "Poisson-binomial model treating each category as an independent "
+                    "trial. Scenario analysis shows your win% under best-case "
+                    "(win all toss-ups) and worst-case (lose all toss-ups)."
                 ),
-                ui.output_ui("matchup_detail_ui"),
+                ui.output_ui("match_win_prob_ui"),
+            ),
+            _card(
+                "Batting vs Pitching Split",
+                _note(
+                    "Category record split by batting (7 cats) and pitching (5 cats). "
+                    "Identifies which side of your roster needs the most attention."
+                ),
+                ui.output_ui("bat_pitch_split_ui"),
+            ),
+            col_widths=[7, 5],
+        ),
+        # Row 2 — Battle zones + IP pace
+        ui.layout_columns(
+            _card(
+                "Battle Zones",
+                _note(
+                    "All 12 categories colour-coded by confidence level. "
+                    "Green = safe wins, orange = contested, red = safe losses."
+                ),
+                ui.output_ui("battle_zones_ui"),
+            ),
+            _card(
+                "Pitching Strategy",
+                _note(
+                    "Combines IP pace with pitching category analysis. "
+                    "If below 21 IP, all pitching categories are forfeited. "
+                    "Advises whether streaming pitchers helps or hurts rate stats."
+                ),
+                ui.output_ui("pitching_strategy_ui"),
+            ),
+            col_widths=[7, 5],
+        ),
+        # Row 3 — Category gap analysis (full width)
+        ui.layout_columns(
+            _card(
+                "Category Gap Analysis",
+                _note(
+                    "Exact margins needed to flip each contested category. "
+                    "Focus roster moves and lineup decisions on the smallest gaps."
+                ),
+                ui.output_ui("category_gap_ui"),
             ),
             col_widths=[12],
         ),
-        # Advanced analytics
+        # Row 4 — Clutch flip analysis (full width)
         ui.layout_columns(
             _card(
-                "Advanced Analytics",
+                "Clutch Flip Analysis",
                 _note(
-                    "Match Win Probability uses the exact Poisson-binomial distribution "
-                    "treating each category as an independent trial — P(cats won > 6/12). "
-                    "Battle Zones colour-code all 12 categories by confidence level. "
-                    "Clutch Flip Analysis shows how much your overall match win % would "
-                    "change if you flipped each contested category — prioritise the "
-                    "categories with the largest positive Δ."
+                    "Shows how much your overall match win% would change if you "
+                    "flipped each contested category. Prioritise the categories "
+                    "with the largest positive delta."
                 ),
-                ui.output_ui("matchup_advanced_ui"),
+                ui.output_ui("clutch_flip_ui"),
             ),
             col_widths=[12],
         ),

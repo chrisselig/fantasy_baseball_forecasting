@@ -1223,44 +1223,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     # ── Matchup Detail ────────────────────────────────────────────────────
 
     @render.ui
-    def matchup_detail_ui() -> Tag:
-        df = matchup_data()
-        if df.empty:
-            return ui.p(
-                "No matchup data available.", style="padding:0.5rem;color:#666;"
-            )
-        headers = ["Category", "Mine", "Opp", "Leading", "Margin", "Win%", "Status"]
-        rows: list[list[Any]] = []
-        for _, r in df.iterrows():
-            status = str(r.get("status", ""))
-            win_prob = float(r.get("win_prob", 0.5))
-            margin = float(r.get("margin_pct", 0.0))
-            leading = bool(r.get("my_leads", False))
-            cat = str(r.get("category", ""))
-            cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
-            rows.append(
-                [
-                    cat_label,
-                    _fmt_stat(r.get("my_value", ""), cat),
-                    _fmt_stat(r.get("opp_value", ""), cat),
-                    ui.tags.span("▲ Yes", style="color:#2e7d32;font-weight:700;")
-                    if leading
-                    else ui.tags.span("▼ No", style="color:#c62828;font-weight:700;"),
-                    f"{margin * 100:.1f}%",
-                    ui.tags.span(
-                        f"{win_prob * 100:.0f}%",
-                        class_=_win_pct_class(win_prob),
-                    ),
-                    ui.tags.span(
-                        _STATUS_LABEL.get(status, status),
-                        class_=_STATUS_CLASS.get(status, ""),
-                    ),
-                ]
-            )
-        return _html_table(headers, rows)
-
-    @render.ui
-    def matchup_advanced_ui() -> Tag:
+    def match_win_prob_ui() -> Tag:
+        """Match win probability with scenario analysis."""
         df = matchup_data()
         if df.empty:
             return ui.p("No data.", style="color:#888;")
@@ -1268,6 +1232,191 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         probs = df["win_prob"].tolist()
         mwp = match_win_probability(probs)
         expected_wins = sum(probs)
+
+        # Scenario analysis: best/worst case for contested categories
+        contested = df[(df["win_prob"] >= 0.35) & (df["win_prob"] < 0.70)]
+        best_probs = [0.95 if 0.35 <= p < 0.70 else p for p in probs]
+        worst_probs = [0.05 if 0.35 <= p < 0.70 else p for p in probs]
+        mwp_best = match_win_probability(best_probs)
+        mwp_worst = match_win_probability(worst_probs)
+        n_contested = len(contested)
+
+        mwp_color = "#2e7d32" if mwp >= 0.55 else "#c62828"
+
+        return ui.div(
+            # Main probability display
+            ui.tags.div(
+                ui.tags.span(
+                    f"{mwp * 100:.1f}%",
+                    style=f"font-size:2rem;font-weight:800;color:{mwp_color};",
+                ),
+                ui.tags.span(
+                    "  match win probability",
+                    style="font-size:0.85rem;color:#4a6282;",
+                ),
+                style="margin-bottom:0.5rem;",
+            ),
+            # Expected wins
+            ui.tags.div(
+                ui.tags.span(
+                    f"Expected category wins: {expected_wins:.1f} / 12",
+                    style="font-size:0.85rem;color:#132747;font-weight:600;",
+                ),
+                style="margin-bottom:0.75rem;",
+            ),
+            # Scenario analysis
+            ui.tags.p(
+                "SCENARIO ANALYSIS",
+                style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;"
+                "color:#4a6282;margin-bottom:6px;font-weight:700;",
+            ),
+            ui.tags.div(
+                ui.tags.span(
+                    f"{n_contested} contested categories in play",
+                    style="font-size:0.8rem;color:#132747;margin-bottom:4px;display:block;",
+                ),
+                ui.tags.div(
+                    _stat_box(
+                        "Best Case",
+                        f"{mwp_best * 100:.1f}%",
+                        "win all toss-ups",
+                        color="#2e7d32",
+                    ),
+                    _stat_box(
+                        "Current",
+                        f"{mwp * 100:.1f}%",
+                        "projected",
+                        color="#1a7fa1",
+                    ),
+                    _stat_box(
+                        "Worst Case",
+                        f"{mwp_worst * 100:.1f}%",
+                        "lose all toss-ups",
+                        color="#c62828",
+                    ),
+                    style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem;"
+                    "margin-top:0.5rem;",
+                ),
+            ),
+            style="padding:0.25rem 0;",
+        )
+
+    @render.ui
+    def bat_pitch_split_ui() -> Tag:
+        """Batting vs pitching category record split."""
+        df = matchup_data()
+        if df.empty:
+            return ui.p("No data.", style="color:#888;")
+
+        bat_cats = [
+            c
+            for c in df["category"]
+            if _CATEGORY_META.get(c, {}).get("type") == "batter"
+        ]
+        pitch_cats = [
+            c
+            for c in df["category"]
+            if _CATEGORY_META.get(c, {}).get("type") == "pitcher"
+        ]
+
+        def _split_record(cats: list[str]) -> tuple[int, int, int]:
+            wins = ties = losses = 0
+            for cat in cats:
+                row = df[df["category"] == cat]
+                if row.empty:
+                    continue
+                wp = float(row.iloc[0]["win_prob"])
+                if wp >= 0.55:
+                    wins += 1
+                elif wp <= 0.45:
+                    losses += 1
+                else:
+                    ties += 1
+            return wins, ties, losses
+
+        bat_w, bat_t, bat_l = _split_record(bat_cats)
+        pit_w, pit_t, pit_l = _split_record(pitch_cats)
+        total_w = bat_w + pit_w
+        total_l = bat_l + pit_l
+        total_t = bat_t + pit_t
+
+        def _record_bar(
+            label: str, wins: int, ties: int, losses: int, total: int
+        ) -> Tag:
+            w_pct = (wins / total * 100) if total else 0
+            t_pct = (ties / total * 100) if total else 0
+            l_pct = (losses / total * 100) if total else 0
+            return ui.tags.div(
+                ui.tags.div(
+                    ui.tags.span(
+                        label,
+                        style="font-size:0.75rem;font-weight:700;color:#132747;",
+                    ),
+                    ui.tags.span(
+                        f" {wins}W - {ties}T - {losses}L",
+                        style="font-size:0.75rem;color:#4a6282;",
+                    ),
+                    style="margin-bottom:3px;",
+                ),
+                ui.tags.div(
+                    ui.tags.div(
+                        style=f"width:{w_pct}%;background:#2e7d32;height:100%;border-radius:3px 0 0 3px;"
+                        "display:inline-block;",
+                    ),
+                    ui.tags.div(
+                        style=f"width:{t_pct}%;background:#e65100;height:100%;"
+                        "display:inline-block;",
+                    ),
+                    ui.tags.div(
+                        style=f"width:{l_pct}%;background:#c62828;height:100%;border-radius:0 3px 3px 0;"
+                        "display:inline-block;",
+                    ),
+                    style="height:18px;background:#e0e0e0;border-radius:3px;overflow:hidden;"
+                    "display:flex;",
+                ),
+                style="margin-bottom:0.75rem;",
+            )
+
+        # Identify which side needs focus
+        bat_net = bat_w - bat_l
+        pit_net = pit_w - pit_l
+        if bat_net < pit_net:
+            focus = "Batting categories need more attention this week."
+            focus_color = "#c62828"
+        elif pit_net < bat_net:
+            focus = "Pitching categories need more attention this week."
+            focus_color = "#c62828"
+        else:
+            focus = "Both sides are balanced."
+            focus_color = "#2e7d32"
+
+        return ui.div(
+            _record_bar(
+                "Overall", total_w, total_t, total_l, total_w + total_t + total_l
+            ),
+            _record_bar(
+                f"Batting ({len(bat_cats)} cats)", bat_w, bat_t, bat_l, len(bat_cats)
+            ),
+            _record_bar(
+                f"Pitching ({len(pitch_cats)} cats)",
+                pit_w,
+                pit_t,
+                pit_l,
+                len(pitch_cats),
+            ),
+            ui.tags.p(
+                focus,
+                style=f"font-size:0.78rem;color:{focus_color};font-weight:600;margin-top:0.25rem;",
+            ),
+            style="padding:0.25rem 0;",
+        )
+
+    @render.ui
+    def battle_zones_ui() -> Tag:
+        """Battle zone pills for all categories."""
+        df = matchup_data()
+        if df.empty:
+            return ui.p("No data.", style="color:#888;")
 
         safe_wins_df = df[df["win_prob"] >= 0.70]
         in_play_df = df[(df["win_prob"] >= 0.35) & (df["win_prob"] < 0.70)]
@@ -1285,77 +1434,341 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 for _, r in sub.iterrows()
             ]
 
-        flip_rows: list[list[Any]] = []
-        for _, r in in_play_df.sort_values(
-            "win_prob", key=lambda s: abs(s - 0.5)
-        ).iterrows():
+        return ui.div(
+            ui.tags.p(
+                f"Safe Wins ({len(safe_wins_df)})",
+                style="font-size:0.7rem;color:#2e7d32;font-weight:700;margin:0 0 2px 0;",
+            ),
+            ui.div(*_pills(safe_wins_df, "#2e7d32"))
+            if not safe_wins_df.empty
+            else ui.tags.span("None", style="color:#888;font-size:0.75rem;"),
+            ui.tags.p(
+                f"Contested ({len(in_play_df)})",
+                style="font-size:0.7rem;color:#e65100;font-weight:700;margin:0.5rem 0 2px 0;",
+            ),
+            ui.div(*_pills(in_play_df, "#e65100"))
+            if not in_play_df.empty
+            else ui.tags.span("None", style="color:#888;font-size:0.75rem;"),
+            ui.tags.p(
+                f"Safe Losses ({len(safe_losses_df)})",
+                style="font-size:0.7rem;color:#c62828;font-weight:700;margin:0.5rem 0 2px 0;",
+            ),
+            ui.div(*_pills(safe_losses_df, "#c62828"))
+            if not safe_losses_df.empty
+            else ui.tags.span("None", style="color:#888;font-size:0.75rem;"),
+            style="padding:0.25rem 0;",
+        )
+
+    @render.ui
+    def pitching_strategy_ui() -> Tag:
+        """Pitching strategy: IP pace + category implications."""
+        report = daily_report()
+        df = matchup_data()
+        ip_pace = report.get("ip_pace", {})
+        if not isinstance(ip_pace, dict) or not ip_pace:
+            return ui.p("No pitching data.", style="color:#888;")
+
+        current_ip = float(ip_pace.get("current_ip", 0.0))
+        projected_ip = float(ip_pace.get("projected_ip", 0.0))
+        min_ip = int(ip_pace.get("min_ip", 21))
+        on_pace = bool(ip_pace.get("on_pace", False))
+        shortfall = max(0, min_ip - projected_ip)
+
+        # Gather pitching category states
+        pitch_cats = ["w", "k", "whip", "k_bb", "sv_h"]
+        pitch_states: list[Tag] = []
+        winning_pitch = 0
+        losing_pitch = 0
+
+        if not df.empty:
+            for cat in pitch_cats:
+                row = df[df["category"] == cat]
+                if row.empty:
+                    continue
+                r = row.iloc[0]
+                wp = float(r.get("win_prob", 0.5))
+                my_val = r.get("my_value", 0)
+                opp_val = r.get("opp_value", 0)
+                cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
+
+                if wp >= 0.55:
+                    winning_pitch += 1
+                elif wp <= 0.45:
+                    losing_pitch += 1
+
+                color = (
+                    "#2e7d32" if wp >= 0.55 else "#c62828" if wp <= 0.45 else "#e65100"
+                )
+                pitch_states.append(
+                    ui.tags.div(
+                        ui.tags.span(
+                            cat_label,
+                            style="font-weight:700;width:45px;display:inline-block;",
+                        ),
+                        ui.tags.span(
+                            f"{_fmt_stat(my_val, cat)} vs {_fmt_stat(opp_val, cat)}",
+                            style="font-size:0.78rem;color:#132747;",
+                        ),
+                        ui.tags.span(
+                            f"  {wp * 100:.0f}%",
+                            style=f"font-weight:700;color:{color};margin-left:6px;",
+                        ),
+                        style="font-size:0.8rem;margin-bottom:2px;",
+                    )
+                )
+
+        # Build strategic advice
+        advice_parts: list[Tag] = []
+        if not on_pace:
+            advice_parts.append(
+                ui.tags.div(
+                    ui.tags.span(
+                        f"IP Shortfall: {shortfall:.1f} IP below minimum ({current_ip:.1f}/{min_ip})",
+                        style="color:#c62828;font-weight:700;",
+                    ),
+                    ui.tags.span(
+                        " — All 5 pitching categories forfeited if not met. "
+                        "Stream pitchers to reach threshold.",
+                        style="color:#4a6282;font-size:0.78rem;",
+                    ),
+                    style="font-size:0.8rem;margin-bottom:0.5rem;",
+                )
+            )
+        else:
+            # On pace — advise based on rate stats
+            whip_row = df[df["category"] == "whip"] if not df.empty else pd.DataFrame()
+            kbb_row = df[df["category"] == "k_bb"] if not df.empty else pd.DataFrame()
+
+            whip_leading = (
+                bool(whip_row.iloc[0].get("my_leads", False))
+                if not whip_row.empty
+                else False
+            )
+            kbb_leading = (
+                bool(kbb_row.iloc[0].get("my_leads", False))
+                if not kbb_row.empty
+                else False
+            )
+
+            if whip_leading and kbb_leading:
+                advice_parts.append(
+                    ui.tags.div(
+                        f"IP met ({current_ip:.1f}/{min_ip}). ",
+                        ui.tags.span(
+                            "Leading WHIP and K/BB — streaming risky pitchers could hurt rate stats. "
+                            "Consider sitting marginal arms to protect your lead.",
+                            style="color:#2e7d32;",
+                        ),
+                        style="font-size:0.8rem;margin-bottom:0.5rem;",
+                    )
+                )
+            elif not whip_leading and not kbb_leading:
+                advice_parts.append(
+                    ui.tags.div(
+                        f"IP met ({current_ip:.1f}/{min_ip}). ",
+                        ui.tags.span(
+                            "Trailing WHIP and K/BB — streaming high-K pitchers could flip both. "
+                            "Target high-strikeout arms with manageable walk rates.",
+                            style="color:#e65100;",
+                        ),
+                        style="font-size:0.8rem;margin-bottom:0.5rem;",
+                    )
+                )
+            else:
+                advice_parts.append(
+                    ui.tags.div(
+                        f"IP met ({current_ip:.1f}/{min_ip}). ",
+                        ui.tags.span(
+                            "Mixed rate stats — be selective with streaming. "
+                            "Only add pitchers who help the category you're trailing.",
+                            style="color:#4a6282;",
+                        ),
+                        style="font-size:0.8rem;margin-bottom:0.5rem;",
+                    )
+                )
+
+        return ui.div(
+            # Advice section
+            *advice_parts,
+            # Pitching category breakdown
+            ui.tags.p(
+                f"PITCHING CATEGORIES: {winning_pitch}W - {5 - winning_pitch - losing_pitch}T - {losing_pitch}L",
+                style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;"
+                "color:#4a6282;margin:0.5rem 0 4px 0;font-weight:700;",
+            ),
+            *pitch_states,
+            style="padding:0.25rem 0;",
+        )
+
+    @render.ui
+    def category_gap_ui() -> Tag:
+        """Category gap analysis — exact margins to flip contested categories."""
+        df = matchup_data()
+        if df.empty:
+            return ui.p("No data.", style="color:#888;")
+
+        contested = df[(df["win_prob"] >= 0.20) & (df["win_prob"] < 0.80)]
+        if contested.empty:
+            return ui.p(
+                "No contested categories — all categories are decided.",
+                style="color:#888;padding:0.5rem;",
+            )
+
+        headers = ["Category", "Mine", "Opp", "Gap", "Direction", "Difficulty"]
+        rows: list[list[Any]] = []
+
+        for _, r in contested.sort_values("win_prob", ascending=True).iterrows():
+            cat = str(r.get("category", ""))
+            cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
+            win_dir = _CATEGORY_META.get(cat, {}).get("win", "highest")
+            my_val = float(r.get("my_value", 0))
+            opp_val = float(r.get("opp_value", 0))
+            my_leads = bool(r.get("my_leads", False))
+
+            gap = abs(my_val - opp_val)
+
+            # Format gap with units
+            if cat in _INTEGER_CATS:
+                gap_str = f"{int(round(gap))}"
+            elif cat in _TWO_DECIMAL_CATS:
+                gap_str = f"{gap:.2f}"
+            else:
+                gap_str = f"{gap:.3f}"
+
+            # Direction text
+            if my_leads:
+                if win_dir == "lowest":
+                    direction = f"Maintain {gap_str} lower"
+                else:
+                    direction = f"Maintain {gap_str} lead"
+                dir_color = "#2e7d32"
+            else:
+                if win_dir == "lowest":
+                    direction = f"Need to lower by {gap_str}"
+                else:
+                    direction = f"Need {gap_str} more"
+                dir_color = "#c62828"
+
+            # Difficulty rating based on gap relative to typical daily output
+            margin_pct = float(r.get("margin_pct", 0))
+            if margin_pct < 0.03:
+                difficulty = ui.tags.span(
+                    "Razor Thin",
+                    style="background:#e65100;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+            elif margin_pct < 0.08:
+                difficulty = ui.tags.span(
+                    "Flippable",
+                    style="background:#1a7fa1;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+            elif margin_pct < 0.15:
+                difficulty = ui.tags.span(
+                    "Reachable",
+                    style="background:#558b2f;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+            else:
+                difficulty = ui.tags.span(
+                    "Tough",
+                    style="background:#c62828;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+
+            rows.append(
+                [
+                    cat_label,
+                    _fmt_stat(my_val, cat),
+                    _fmt_stat(opp_val, cat),
+                    gap_str,
+                    ui.tags.span(
+                        direction,
+                        style=f"color:{dir_color};font-weight:600;font-size:0.8rem;",
+                    ),
+                    difficulty,
+                ]
+            )
+
+        return _html_table(headers, rows)
+
+    @render.ui
+    def clutch_flip_ui() -> Tag:
+        """Clutch flip analysis — marginal impact of flipping each category."""
+        df = matchup_data()
+        if df.empty:
+            return ui.p("No data.", style="color:#888;")
+
+        probs = df["win_prob"].tolist()
+        mwp = match_win_probability(probs)
+
+        in_play_df = df[(df["win_prob"] >= 0.35) & (df["win_prob"] < 0.70)]
+        if in_play_df.empty:
+            return ui.p(
+                "No contested categories to flip.",
+                style="color:#888;padding:0.5rem;",
+            )
+
+        # Build rows with delta for sorting
+        flip_entries: list[tuple[float, list[Any]]] = []
+        for _, r in in_play_df.iterrows():
             cat = str(r.get("category", ""))
             cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
             wp = float(r.get("win_prob", 0.5))
+            leading = bool(r.get("my_leads", False))
+
             # Marginal match win prob if this category flips
             probs_flipped = [1.0 - wp if p == wp else p for p in probs]
             mwp_flipped = match_win_probability(probs_flipped)
             delta = mwp_flipped - mwp
             delta_str = f"+{delta * 100:.1f}%" if delta >= 0 else f"{delta * 100:.1f}%"
-            leading = bool(r.get("my_leads", False))
-            flip_rows.append(
-                [
-                    cat_label,
-                    f"{'▲' if leading else '▼'} {_fmt_stat(r.get('my_value', ''), cat)}",
-                    _fmt_stat(r.get("opp_value", ""), cat),
-                    ui.tags.span(f"{wp * 100:.0f}%", class_=_win_pct_class(wp)),
-                    ui.tags.span(
-                        delta_str,
-                        style="color:#1a7fa1;font-weight:700;"
-                        if delta >= 0
-                        else "color:#c62828;font-weight:700;",
-                    ),
-                ]
+
+            # Priority ranking
+            if delta >= 0.10:
+                priority = ui.tags.span(
+                    "High",
+                    style="background:#2e7d32;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+            elif delta >= 0.04:
+                priority = ui.tags.span(
+                    "Medium",
+                    style="background:#e65100;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+            else:
+                priority = ui.tags.span(
+                    "Low",
+                    style="background:#888;color:#fff;border-radius:3px;"
+                    "padding:1px 6px;font-size:0.7rem;font-weight:600;",
+                )
+
+            flip_entries.append(
+                (
+                    abs(delta),
+                    [
+                        cat_label,
+                        f"{'▲' if leading else '▼'} {_fmt_stat(r.get('my_value', ''), cat)}",
+                        _fmt_stat(r.get("opp_value", ""), cat),
+                        ui.tags.span(f"{wp * 100:.0f}%", class_=_win_pct_class(wp)),
+                        ui.tags.span(
+                            delta_str,
+                            style="font-weight:700;color:"
+                            + ("#1a7fa1" if delta >= 0 else "#c62828")
+                            + ";",
+                        ),
+                        priority,
+                    ],
+                )
             )
 
-        flip_table: Tag = (
-            _html_table(
-                ["Category", "Mine", "Opp", "Win%", "Match Δ If Flipped"],
-                flip_rows,
-            )
-            if flip_rows
-            else ui.p("No contested categories.", style="color:#888;")
-        )
+        # Sort by absolute delta descending (highest impact first)
+        flip_entries.sort(key=lambda x: x[0], reverse=True)
+        flip_rows = [row for _, row in flip_entries]
 
-        return ui.div(
-            ui.tags.div(
-                ui.tags.span("MATCH WIN PROBABILITY: ", style="font-weight:700;"),
-                ui.tags.span(
-                    f"{mwp * 100:.1f}%",
-                    style="font-weight:700;color:"
-                    + ("#2e7d32" if mwp >= 0.55 else "#c62828")
-                    + ";",
-                ),
-                ui.tags.span(
-                    f"  |  Expected category wins: {expected_wins:.1f}/12",
-                    style="color:#4a6282;",
-                ),
-                style="font-size:0.85rem;margin-bottom:0.75rem;",
-            ),
-            ui.tags.p(
-                "BATTLE ZONES",
-                style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;"
-                "color:#4a6282;margin-bottom:4px;font-weight:700;",
-            ),
-            ui.div(*_pills(safe_wins_df, "#2e7d32")),
-            ui.div(*_pills(in_play_df, "#e65100"), style="margin-top:3px;"),
-            ui.div(*_pills(safe_losses_df, "#c62828"), style="margin-top:3px;"),
-            ui.tags.p(
-                ui.tags.strong("CLUTCH FLIP ANALYSIS"),
-                ui.tags.span(
-                    " — change in match win% if you flip this contested category",
-                    style="font-weight:400;color:#4a6282;",
-                ),
-                style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;"
-                "color:#132747;margin-top:1rem;margin-bottom:4px;",
-            ),
-            flip_table,
-            style="padding:0.25rem 0;",
+        return _html_table(
+            ["Category", "Mine", "Opp", "Win%", "Match Win% Delta", "Priority"],
+            flip_rows,
         )
 
     # ── Waiver Wire ───────────────────────────────────────────────────────
