@@ -93,6 +93,7 @@ _DISPLAY_STAT_COLS: list[str] = [
     "whip",
     "k_bb",
     "sv_h",
+    "games_played",
 ]
 
 

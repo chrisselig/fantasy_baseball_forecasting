@@ -322,13 +322,17 @@ _TWO_DECIMAL_CATS: set[str] = {"whip", "k_bb"}
 _THREE_DECIMAL_CATS: set[str] = {"avg", "ops", "fpct"}
 
 
-def _fmt_stat(v: Any, cat: str = "") -> str:
+def _fmt_stat(v: Any, cat: str = "", per_game: bool = False) -> str:
     """Format a stat value for display. Returns '—' for None/NaN.
 
     Args:
         v: The stat value to format.
         cat: Lowercase category key (e.g. "hr", "whip", "avg").
              When provided, formatting is category-aware.
+        per_game: When True, categories that are normally integer counting
+            stats (HR/SB/BB/K/W/SV+H) are treated as per-game rates and
+            rendered with 2 decimal places. This prevents waiver/roster
+            displays from rounding "0.29 HR/game" down to "0".
     """
     if v is None:
         return "—"
@@ -339,6 +343,8 @@ def _fmt_stat(v: Any, cat: str = "") -> str:
             return "—"
         cat_lower = cat.lower()
         if cat_lower in _INTEGER_CATS:
+            if per_game:
+                return f"{v:.2f}"
             return str(int(round(v)))
         if cat_lower in _TWO_DECIMAL_CATS:
             return f"{v:.2f}"
@@ -734,6 +740,35 @@ def _load_roster() -> pd.DataFrame:
     return _empty_roster_df()
 
 
+def _filter_inactive_waiver_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop waiver rows for players who can't contribute this week.
+
+    A player is considered inactive when either:
+      * they have zero games played season-to-date (no stats, no signal), or
+      * their position string contains an ``NA`` or ``IL`` eligibility tag.
+
+    Both cases produce rows with all-zero rates and no streak signal,
+    which otherwise pad the bottom of the waiver list with noise.
+    """
+    if df.empty:
+        return df
+
+    out = df
+    if "games_played" in out.columns:
+        gp = pd.to_numeric(out["games_played"], errors="coerce").fillna(0)
+        out = out[gp > 0]
+
+    if "position" in out.columns:
+
+        def _is_inactive_position(pos: object) -> bool:
+            tokens = {t.strip().upper() for t in str(pos or "").split(",")}
+            return bool(tokens & {"NA", "IL", "IL10", "IL15", "IL60"})
+
+        out = out[~out["position"].apply(_is_inactive_position)]
+
+    return out.reset_index(drop=True)
+
+
 def _waiver_df_from_report(report: dict[str, Any]) -> pd.DataFrame:
     """Build the waiver wire DataFrame directly from the daily report.
 
@@ -809,19 +844,46 @@ def _load_advanced_with_league_avgs() -> tuple[
     DataFrames and empty dicts are returned when nothing is loaded so the
     caller can fall back gracefully.
     """
+    # Pull current season stats, but COALESCE each column against the
+    # previous season's value so early-season rows (where Savant hasn't
+    # cleared its min-sample thresholds for Barrel%/HardHit%/etc.) still
+    # get a defensible value to display. Batted-ball metrics are sticky
+    # year-over-year so the prior-season fallback is reasonable.
     try:
         with managed_connection() as conn:
             adv: pd.DataFrame = conn.execute(
                 f"""
-                SELECT
-                    player_id,
-                    xwoba, woba, barrel_pct, hard_hit_pct,
-                    avg_launch_angle, sweet_spot_pct, bat_speed_pctile,
-                    xera, xwoba_against, k_bb_pct, barrel_pct_against
-                FROM {FACT_PLAYER_ADVANCED_STATS}
-                WHERE season = (
-                    SELECT MAX(season) FROM {FACT_PLAYER_ADVANCED_STATS}
+                WITH max_season AS (
+                    SELECT MAX(season) AS s FROM {FACT_PLAYER_ADVANCED_STATS}
+                ),
+                curr AS (
+                    SELECT * FROM {FACT_PLAYER_ADVANCED_STATS}
+                    WHERE season = (SELECT s FROM max_season)
+                ),
+                prev AS (
+                    SELECT * FROM {FACT_PLAYER_ADVANCED_STATS}
+                    WHERE season = (SELECT s - 1 FROM max_season)
                 )
+                SELECT
+                    COALESCE(curr.player_id, prev.player_id)       AS player_id,
+                    COALESCE(curr.xwoba, prev.xwoba)               AS xwoba,
+                    COALESCE(curr.woba, prev.woba)                 AS woba,
+                    COALESCE(curr.barrel_pct, prev.barrel_pct)     AS barrel_pct,
+                    COALESCE(curr.hard_hit_pct, prev.hard_hit_pct) AS hard_hit_pct,
+                    COALESCE(curr.avg_launch_angle,
+                             prev.avg_launch_angle)                AS avg_launch_angle,
+                    COALESCE(curr.sweet_spot_pct,
+                             prev.sweet_spot_pct)                  AS sweet_spot_pct,
+                    COALESCE(curr.bat_speed_pctile,
+                             prev.bat_speed_pctile)                AS bat_speed_pctile,
+                    COALESCE(curr.xera, prev.xera)                 AS xera,
+                    COALESCE(curr.xwoba_against,
+                             prev.xwoba_against)                   AS xwoba_against,
+                    COALESCE(curr.k_bb_pct, prev.k_bb_pct)         AS k_bb_pct,
+                    COALESCE(curr.barrel_pct_against,
+                             prev.barrel_pct_against)              AS barrel_pct_against
+                FROM curr
+                FULL OUTER JOIN prev ON curr.player_id = prev.player_id
                 """
             ).fetchdf()
     except (duckdb.Error, Exception) as exc:
@@ -1060,6 +1122,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         df = _waiver_df_from_report(daily_report())
         if df.empty:
             return df
+        # Hide inactive players: no games played yet OR flagged NA/IL.
+        # These rows drag down the list with all-zero stats and no signal.
+        df = _filter_inactive_waiver_rows(df)
         pos = str(input.position_filter())
         if pos and pos != "All":
             df = df[df["position"].str.contains(pos, na=False)]
@@ -2296,8 +2361,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 [
                     _fmt_stat(r.get("avg"), "avg"),
                     _fmt_stat(r.get("ops"), "ops"),
-                    _fmt_stat(r.get("hr"), "hr"),
-                    _fmt_stat(r.get("sb"), "sb"),
+                    _fmt_stat(r.get("hr"), "hr", per_game=True),
+                    _fmt_stat(r.get("sb"), "sb", per_game=True),
                     _color_adv(r.get("woba"), hit_avgs.get("woba"), digits=3),
                     _color_adv(r.get("xwoba"), hit_avgs.get("xwoba"), digits=3),
                     _color_adv(
@@ -2353,10 +2418,10 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             row_cells = _common_cells(r)
             row_cells.extend(
                 [
-                    _fmt_stat(r.get("k"), "k"),
-                    _fmt_stat(r.get("w"), "w"),
+                    _fmt_stat(r.get("k"), "k", per_game=True),
+                    _fmt_stat(r.get("w"), "w", per_game=True),
                     _fmt_stat(r.get("whip"), "whip"),
-                    _fmt_stat(r.get("sv_h"), "sv_h"),
+                    _fmt_stat(r.get("sv_h"), "sv_h", per_game=True),
                     _color_adv(
                         r.get("xera"),
                         pit_avgs.get("xera"),

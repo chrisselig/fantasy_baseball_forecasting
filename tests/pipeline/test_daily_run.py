@@ -814,6 +814,7 @@ def test_enrich_with_rates_fills_missing_with_zero():
                 "whip": 0.0,
                 "k_bb": 0.0,
                 "sv_h": 0.0,
+                "games_played": 3.0,
             }
         ]
     )
@@ -823,6 +824,8 @@ def test_enrich_with_rates_fills_missing_with_zero():
     assert abs(a_row["h"] - 1.5) < 1e-6
     assert b_row["h"] == 0.0
     assert b_row["whip"] == 0.0
+    assert a_row["games_played"] == 3.0
+    assert b_row["games_played"] == 0.0
 
 
 def test_serialize_waiver_rankings_handles_nan():
@@ -852,6 +855,30 @@ def test_serialize_waiver_rankings_handles_nan():
     assert out[0]["h"] is None
     assert out[0]["days_since_callup"] is None
     json.dumps(out)  # must not raise
+
+
+def test_serialize_waiver_rankings_includes_games_played():
+    from src.pipeline.daily_run import _serialize_waiver_rankings
+
+    df = pd.DataFrame(
+        [
+            {
+                "player_id": "a",
+                "player_name": "Alice",
+                "team": "NYY",
+                "position": "OF",
+                "is_pitcher": False,
+                "overall_score": 5.0,
+                "fit_score": 2.0,
+                "recommended_drop_id": None,
+                "is_callup": False,
+                "days_since_callup": float("nan"),
+                "games_played": 7.0,
+            }
+        ]
+    )
+    out = _serialize_waiver_rankings(df)
+    assert out[0]["games_played"] == 7.0
 
 
 # ── _step_load_player_news ─────────────────────────────────────────────────────

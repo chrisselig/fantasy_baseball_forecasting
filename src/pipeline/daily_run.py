@@ -685,6 +685,7 @@ def _serialize_waiver_rankings(
         "whip",
         "k_bb",
         "sv_h",
+        "games_played",
     ]
     present = [c for c in keep_cols if c in ranked_df.columns]
     df = ranked_df[present].head(limit).copy()
@@ -995,15 +996,35 @@ def _query_advanced_stats(
     if not player_ids:
         return pd.DataFrame(columns=cols)
     placeholders = ", ".join(["?" for _ in player_ids])
+    # Prefer current-season values; fall back to previous season when the
+    # current row hasn't cleared Savant's min-sample thresholds yet. This
+    # feeds better priors into the shrinkage layer during the first weeks.
     try:
         df: pd.DataFrame = conn.execute(
             f"""
-            SELECT player_id, xwoba, barrel_pct, xwoba_against, k_bb_pct
-            FROM {FACT_PLAYER_ADVANCED_STATS}
-            WHERE season = ?
-              AND player_id IN ({placeholders})
+            WITH curr AS (
+                SELECT player_id, xwoba, barrel_pct, xwoba_against, k_bb_pct
+                FROM {FACT_PLAYER_ADVANCED_STATS}
+                WHERE season = ?
+                  AND player_id IN ({placeholders})
+            ),
+            prev AS (
+                SELECT player_id, xwoba, barrel_pct, xwoba_against, k_bb_pct
+                FROM {FACT_PLAYER_ADVANCED_STATS}
+                WHERE season = ?
+                  AND player_id IN ({placeholders})
+            )
+            SELECT
+                COALESCE(curr.player_id, prev.player_id)       AS player_id,
+                COALESCE(curr.xwoba, prev.xwoba)               AS xwoba,
+                COALESCE(curr.barrel_pct, prev.barrel_pct)     AS barrel_pct,
+                COALESCE(curr.xwoba_against,
+                         prev.xwoba_against)                   AS xwoba_against,
+                COALESCE(curr.k_bb_pct, prev.k_bb_pct)         AS k_bb_pct
+            FROM curr
+            FULL OUTER JOIN prev ON curr.player_id = prev.player_id
             """,
-            [season, *player_ids],
+            [season, *player_ids, season - 1, *player_ids],
         ).fetchdf()
     except duckdb.Error as exc:
         logger.warning("Advanced stats query failed: %s", exc)
@@ -1037,6 +1058,7 @@ def _enrich_with_rates(
         "whip",
         "k_bb",
         "sv_h",
+        "games_played",
     ]
 
     # Drop rate columns if they already exist so the merge is clean.

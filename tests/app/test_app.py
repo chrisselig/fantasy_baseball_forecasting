@@ -189,3 +189,85 @@ def test_html_table_returns_tag() -> None:
     html_str = str(table)
     assert "Col A" in html_str
     assert "r1c1" in html_str
+
+
+# ─── _fmt_stat: per-game rate formatting ──────────────────────────────────
+
+
+def test_fmt_stat_integer_cats_without_per_game_round_to_int() -> None:
+    from src.app.server import _fmt_stat
+
+    # Legacy behavior: 0.29 HR rounds to "0".
+    assert _fmt_stat(0.29, "hr") == "0"
+    assert _fmt_stat(1.6, "sb") == "2"
+
+
+def test_fmt_stat_per_game_shows_two_decimals_for_integer_cats() -> None:
+    from src.app.server import _fmt_stat
+
+    # Waiver/roster callsites use per_game=True so "0.29 HR/game" stays visible.
+    assert _fmt_stat(0.29, "hr", per_game=True) == "0.29"
+    assert _fmt_stat(0.0, "sb", per_game=True) == "0.00"
+    assert _fmt_stat(1.6, "k", per_game=True) == "1.60"
+
+
+def test_fmt_stat_per_game_does_not_affect_rate_cats() -> None:
+    from src.app.server import _fmt_stat
+
+    # WHIP and AVG already use their own precision, per_game is a no-op for them.
+    assert _fmt_stat(1.234, "whip", per_game=True) == "1.23"
+    assert _fmt_stat(0.287, "avg", per_game=True) == "0.287"
+
+
+def test_fmt_stat_none_still_returns_dash_when_per_game() -> None:
+    from src.app.server import _fmt_stat
+
+    assert _fmt_stat(None, "hr", per_game=True) == "—"
+    assert _fmt_stat(float("nan"), "hr", per_game=True) == "—"
+
+
+# ─── _filter_inactive_waiver_rows ─────────────────────────────────────────
+
+
+def test_filter_inactive_drops_zero_games_played() -> None:
+    from src.app.server import _filter_inactive_waiver_rows
+
+    df = pd.DataFrame(
+        [
+            {"player_id": "a", "position": "OF,Util", "games_played": 0},
+            {"player_id": "b", "position": "OF,Util", "games_played": 7},
+        ]
+    )
+    out = _filter_inactive_waiver_rows(df)
+    assert list(out["player_id"]) == ["b"]
+
+
+def test_filter_inactive_drops_na_and_il_eligibility_tags() -> None:
+    from src.app.server import _filter_inactive_waiver_rows
+
+    df = pd.DataFrame(
+        [
+            {"player_id": "a", "position": "OF,Util,NA", "games_played": 4},
+            {"player_id": "b", "position": "3B,Util,IL", "games_played": 4},
+            {"player_id": "c", "position": "RP,P,IL10", "games_played": 4},
+            {"player_id": "d", "position": "OF,Util", "games_played": 4},
+        ]
+    )
+    out = _filter_inactive_waiver_rows(df)
+    assert list(out["player_id"]) == ["d"]
+
+
+def test_filter_inactive_handles_missing_columns() -> None:
+    from src.app.server import _filter_inactive_waiver_rows
+
+    # No games_played / position columns → pass-through.
+    df = pd.DataFrame([{"player_id": "a"}, {"player_id": "b"}])
+    out = _filter_inactive_waiver_rows(df)
+    assert len(out) == 2
+
+
+def test_filter_inactive_empty_df_returns_empty() -> None:
+    from src.app.server import _filter_inactive_waiver_rows
+
+    out = _filter_inactive_waiver_rows(pd.DataFrame())
+    assert out.empty
