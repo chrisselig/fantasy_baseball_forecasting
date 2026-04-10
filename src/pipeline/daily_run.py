@@ -50,6 +50,7 @@ from src.analysis.waiver_ranker import rank_free_agents
 from src.api import mlb_client
 from src.api.yahoo_client import YahooClient, set_stat_id_mapping
 from src.config import LeagueSettings
+from src.db.loaders_advanced import load_advanced_stats
 from src.db.loaders_mlb import (
     get_fantasy_week,
     load_daily_stats,
@@ -68,6 +69,7 @@ from src.db.schema import (
     FACT_DAILY_REPORTS,
     FACT_MATCHUPS,
     FACT_PIPELINE_RUNS,
+    FACT_PLAYER_ADVANCED_STATS,
     FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
     FACT_ROSTERS,
@@ -303,6 +305,33 @@ def _step_load_mlb_stats(
 
     logger.info("MLB stats load complete. Row counts: %s", row_counts)
     return row_counts, schedule_player_df
+
+
+def _step_load_advanced_stats(
+    conn: duckdb.DuckDBPyConnection,
+    season: int,
+) -> dict[str, int]:
+    """Fetch Savant advanced stats and upsert into fact_player_advanced_stats.
+
+    Non-blocking — returns an empty counts dict on any failure.
+    """
+    try:
+        batter_df = mlb_client.get_savant_batter_advanced(season)
+    except Exception as exc:
+        logger.warning("Savant batter fetch failed: %s", exc)
+        batter_df = pd.DataFrame()
+    try:
+        pitcher_df = mlb_client.get_savant_pitcher_advanced(season)
+    except Exception as exc:
+        logger.warning("Savant pitcher fetch failed: %s", exc)
+        pitcher_df = pd.DataFrame()
+
+    try:
+        n = load_advanced_stats(conn, season, batter_df, pitcher_df)
+    except Exception as exc:
+        logger.warning("Advanced stats load failed: %s", exc)
+        return {}
+    return {FACT_PLAYER_ADVANCED_STATS: n}
 
 
 def _build_player_schedule(
@@ -1484,6 +1513,13 @@ def run_daily_pipeline(
     except Exception as exc:
         errors.append(f"mlb: {exc}")
         logger.error("MLB stats load failed: %s", exc)
+
+    # Step 3b: Load Savant advanced stats (non-blocking).
+    try:
+        adv_counts = _step_load_advanced_stats(conn, season)
+        rows_written.update(adv_counts)
+    except Exception as exc:
+        logger.warning("Advanced stats step failed (non-fatal): %s", exc)
 
     # Step 4: Refresh projections
     try:

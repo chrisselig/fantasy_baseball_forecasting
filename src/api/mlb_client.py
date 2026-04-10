@@ -148,6 +148,28 @@ _PROJECTIONS_COLUMNS = [
 
 _CROSSWALK_COLUMNS = ["full_name", "mlb_id", "fg_id"]
 
+# Columns returned by get_savant_batter_advanced / get_savant_pitcher_advanced.
+# Keyed on mlb_id; caller joins to Yahoo player_id via dim_players.
+_SAVANT_BATTER_COLUMNS = [
+    "mlb_id",
+    "season",
+    "xwoba",
+    "barrel_pct",
+    "hard_hit_pct",
+    "avg_launch_angle",
+    "sweet_spot_pct",
+    "bat_speed_pctile",
+    "sprint_speed_pctile",
+]
+_SAVANT_PITCHER_COLUMNS = [
+    "mlb_id",
+    "season",
+    "xera",
+    "xwoba_against",
+    "barrel_pct_against",
+    "hard_hit_pct_against",
+]
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1020,3 +1042,188 @@ def build_player_id_crosswalk() -> pd.DataFrame:
     result: pd.DataFrame = df[_CROSSWALK_COLUMNS].dropna(subset=["mlb_id"]).copy()
     logger.info("Built player ID crosswalk with %d entries.", len(result))
     return result
+
+
+def _safe_pyb_call(label: str, func: Any, *args: Any, **kwargs: Any) -> pd.DataFrame:
+    """Invoke a pybaseball leaderboard call, logging and swallowing any error."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df = func(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s failed: %s", label, exc)
+        return pd.DataFrame()
+    if df is None or df.empty:
+        logger.warning("%s returned no rows.", label)
+        return pd.DataFrame()
+    result: pd.DataFrame = df
+    return result
+
+
+def get_savant_batter_advanced(
+    season: int,
+    min_pa: int = 50,
+) -> pd.DataFrame:
+    """Fetch season-to-date advanced batter metrics from Baseball Savant.
+
+    Combines three Savant leaderboards via player_id (MLBAM):
+      - expected_stats   → xwOBA
+      - exitvelo_barrels → barrel%, hard-hit%, avg launch angle, sweet spot%
+      - percentile_ranks → bat speed, sprint speed (0-100 percentiles)
+
+    Args:
+        season: MLB season year.
+        min_pa: Minimum plate-appearance filter passed to Savant.
+
+    Returns:
+        DataFrame with columns defined in _SAVANT_BATTER_COLUMNS.
+        Returns empty DataFrame (with correct columns) if Savant is unreachable.
+    """
+    import pybaseball  # noqa: PLC0415
+
+    expected = _safe_pyb_call(
+        "statcast_batter_expected_stats",
+        pybaseball.statcast_batter_expected_stats,
+        season,
+        minPA=min_pa,
+    )
+    barrels = _safe_pyb_call(
+        "statcast_batter_exitvelo_barrels",
+        pybaseball.statcast_batter_exitvelo_barrels,
+        season,
+        minBBE=25,
+    )
+    pctiles = _safe_pyb_call(
+        "statcast_batter_percentile_ranks",
+        pybaseball.statcast_batter_percentile_ranks,
+        season,
+    )
+
+    if expected.empty and barrels.empty and pctiles.empty:
+        return _empty_df(_SAVANT_BATTER_COLUMNS)
+
+    frames: list[pd.DataFrame] = []
+    if not expected.empty and "player_id" in expected.columns:
+        df = expected[["player_id", "est_woba"]].rename(
+            columns={"player_id": "mlb_id", "est_woba": "xwoba"}
+        )
+        frames.append(df)
+    if not barrels.empty and "player_id" in barrels.columns:
+        df = barrels[
+            [
+                "player_id",
+                "brl_percent",
+                "ev95percent",
+                "avg_hit_angle",
+                "anglesweetspotpercent",
+            ]
+        ].rename(
+            columns={
+                "player_id": "mlb_id",
+                "brl_percent": "barrel_pct",
+                "ev95percent": "hard_hit_pct",
+                "avg_hit_angle": "avg_launch_angle",
+                "anglesweetspotpercent": "sweet_spot_pct",
+            }
+        )
+        frames.append(df)
+    if not pctiles.empty and "player_id" in pctiles.columns:
+        keep = ["player_id"]
+        rename = {"player_id": "mlb_id"}
+        if "bat_speed" in pctiles.columns:
+            keep.append("bat_speed")
+            rename["bat_speed"] = "bat_speed_pctile"
+        if "sprint_speed" in pctiles.columns:
+            keep.append("sprint_speed")
+            rename["sprint_speed"] = "sprint_speed_pctile"
+        if len(keep) > 1:
+            frames.append(pctiles[keep].rename(columns=rename))
+
+    if not frames:
+        return _empty_df(_SAVANT_BATTER_COLUMNS)
+
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.merge(f, on="mlb_id", how="outer")
+    merged["season"] = season
+
+    for col in _SAVANT_BATTER_COLUMNS:
+        if col not in merged.columns:
+            merged[col] = None
+
+    merged = merged[_SAVANT_BATTER_COLUMNS].dropna(subset=["mlb_id"]).copy()
+    merged["mlb_id"] = pd.to_numeric(merged["mlb_id"], errors="coerce").astype("Int64")
+    merged = merged.dropna(subset=["mlb_id"])
+    logger.info("Fetched Savant batter advanced: %d rows.", len(merged))
+    return merged
+
+
+def get_savant_pitcher_advanced(
+    season: int,
+    min_pa: int = 50,
+) -> pd.DataFrame:
+    """Fetch season-to-date advanced pitcher metrics from Baseball Savant.
+
+    Args:
+        season: MLB season year.
+        min_pa: Minimum PA-faced filter passed to Savant.
+
+    Returns:
+        DataFrame with columns defined in _SAVANT_PITCHER_COLUMNS.
+        Returns empty DataFrame (with correct columns) if Savant is unreachable.
+    """
+    import pybaseball  # noqa: PLC0415
+
+    expected = _safe_pyb_call(
+        "statcast_pitcher_expected_stats",
+        pybaseball.statcast_pitcher_expected_stats,
+        season,
+        minPA=min_pa,
+    )
+    barrels = _safe_pyb_call(
+        "statcast_pitcher_exitvelo_barrels",
+        pybaseball.statcast_pitcher_exitvelo_barrels,
+        season,
+        minBBE=25,
+    )
+
+    if expected.empty and barrels.empty:
+        return _empty_df(_SAVANT_PITCHER_COLUMNS)
+
+    frames: list[pd.DataFrame] = []
+    if not expected.empty and "player_id" in expected.columns:
+        keep = ["player_id"]
+        rename = {"player_id": "mlb_id"}
+        if "xera" in expected.columns:
+            keep.append("xera")
+        if "est_woba" in expected.columns:
+            keep.append("est_woba")
+            rename["est_woba"] = "xwoba_against"
+        frames.append(expected[keep].rename(columns=rename))
+    if not barrels.empty and "player_id" in barrels.columns:
+        df = barrels[["player_id", "brl_percent", "ev95percent"]].rename(
+            columns={
+                "player_id": "mlb_id",
+                "brl_percent": "barrel_pct_against",
+                "ev95percent": "hard_hit_pct_against",
+            }
+        )
+        frames.append(df)
+
+    if not frames:
+        return _empty_df(_SAVANT_PITCHER_COLUMNS)
+
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.merge(f, on="mlb_id", how="outer")
+    merged["season"] = season
+
+    for col in _SAVANT_PITCHER_COLUMNS:
+        if col not in merged.columns:
+            merged[col] = None
+
+    merged = merged[_SAVANT_PITCHER_COLUMNS].dropna(subset=["mlb_id"]).copy()
+    merged["mlb_id"] = pd.to_numeric(merged["mlb_id"], errors="coerce").astype("Int64")
+    merged = merged.dropna(subset=["mlb_id"])
+    logger.info("Fetched Savant pitcher advanced: %d rows.", len(merged))
+    return merged

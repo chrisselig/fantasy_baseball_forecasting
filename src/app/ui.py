@@ -317,10 +317,13 @@ app_ui = ui.page_navbar(
     ui.nav_panel(
         "Roster",
         _note(
-            "Week-to-date stats. Streak labels: 🔥 Hot = ≥ 2 of 4 hot conditions over "
-            "last 7 days (hitters) or last 10 days (pitchers). ❄️ Cold = opposite. "
-            "Hitter conditions: hit streak, 7-day AVG ≥ .320, OPS ≥ .920, HR or SB in last 3 days. "
-            "Pitcher conditions: WHIP < 1.00, RA9 < 2.50, K/9 > 9.0, K/BB > 3.0."
+            "Week-to-date counting stats + season-to-date advanced metrics. "
+            "Hitter advanced: wOBA (computed), xwOBA, Barrel%, HardHit%, LA (launch angle), "
+            "SwSp% (sweet-spot %), BatSp (bat-speed percentile). "
+            "Pitcher advanced: xERA, xwOBA-against, K-BB% (computed), Brl%-against. "
+            "Advanced stats come from Baseball Savant and update daily. "
+            "Streak labels: 🔥 Hot = ≥ 2 of 4 hot conditions over last 7 days (hitters) "
+            "or last 10 days (pitchers). ❄️ Cold = opposite."
         ),
         ui.layout_columns(
             _card("Hitters", ui.output_ui("hitter_roster_ui")),
