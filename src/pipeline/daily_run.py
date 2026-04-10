@@ -46,6 +46,7 @@ from src.analysis.matchup_analyzer import (
     project_week_totals,
     score_categories,
 )
+from src.analysis.news import build_news_df
 from src.analysis.waiver_ranker import rank_free_agents
 from src.api import mlb_client
 from src.api.yahoo_client import YahooClient, set_stat_id_mapping
@@ -57,6 +58,7 @@ from src.db.loaders_mlb import (
     load_projections,
     update_player_crosswalk,
 )
+from src.db.loaders_news import load_player_news
 from src.db.loaders_yahoo import (
     load_matchups,
     load_players,
@@ -70,6 +72,7 @@ from src.db.schema import (
     FACT_MATCHUPS,
     FACT_PIPELINE_RUNS,
     FACT_PLAYER_ADVANCED_STATS,
+    FACT_PLAYER_NEWS,
     FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
     FACT_ROSTERS,
@@ -332,6 +335,51 @@ def _step_load_advanced_stats(
         logger.warning("Advanced stats load failed: %s", exc)
         return {}
     return {FACT_PLAYER_ADVANCED_STATS: n}
+
+
+def _step_load_player_news(
+    conn: duckdb.DuckDBPyConnection,
+    today: datetime.date,
+) -> dict[str, int]:
+    """Fetch Google News RSS headlines for rostered players and upsert.
+
+    Non-blocking — returns an empty dict on any failure. Uses the most
+    recent roster snapshot in fact_rosters (across all teams) so the News
+    tab works for matchup context as well as your own roster.
+    """
+    try:
+        roster_df = conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT MAX(snapshot_date) AS snap FROM {FACT_ROSTERS}
+            )
+            SELECT DISTINCT r.player_id, p.full_name AS player_name
+            FROM {FACT_ROSTERS} r
+            JOIN {DIM_PLAYERS} p ON p.player_id = r.player_id
+            WHERE r.snapshot_date = (SELECT snap FROM latest)
+              AND p.full_name IS NOT NULL
+            """
+        ).fetchdf()
+    except Exception as exc:
+        logger.warning("News step: roster query failed: %s", exc)
+        return {}
+
+    if roster_df.empty:
+        logger.info("News step: no rostered players found.")
+        return {}
+
+    try:
+        news_df = build_news_df(roster_df, max_per_player=5)
+    except Exception as exc:
+        logger.warning("News step: build_news_df failed: %s", exc)
+        return {}
+
+    try:
+        n = load_player_news(conn, news_df)
+    except Exception as exc:
+        logger.warning("News step: load_player_news failed: %s", exc)
+        return {}
+    return {FACT_PLAYER_NEWS: n}
 
 
 def _build_player_schedule(
@@ -1538,6 +1586,13 @@ def run_daily_pipeline(
     except Exception as exc:
         errors.append(f"analysis: {exc}")
         logger.error("Analysis failed: %s", exc, exc_info=True)
+
+    # Step 5b: Refresh player news (non-blocking — Google News RSS can fail).
+    try:
+        news_counts = _step_load_player_news(conn, today)
+        rows_written.update(news_counts)
+    except Exception as exc:
+        logger.warning("News step failed (non-fatal): %s", exc)
 
     # Step 6: Write daily report
     if report:
