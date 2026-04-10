@@ -90,6 +90,113 @@ _STATUS_LABEL: dict[str, str] = {
 _PITCHER_SLOTS = frozenset({"SP", "SP1", "SP2", "RP", "RP1", "RP2", "P", "P1", "P2"})
 
 
+# Tooltip text for every roster column. Each entry is a single string with
+# embedded newlines so it renders as a multi-line native browser tooltip.
+_ROSTER_TOOLTIPS: dict[str, str] = {
+    # Hitter counting / rate stats
+    "H": "Hits — week to date.\nGood week: 10+  •  Avg: 6-9  •  Poor: <5",
+    "HR": "Home runs — week to date.\nGood week: 2+  •  Avg: 1  •  Poor: 0",
+    "SB": "Stolen bases — week to date.\nGood week: 2+  •  Avg: 1  •  Poor: 0",
+    "BB": "Walks — week to date.\nGood week: 5+  •  Avg: 3-4  •  Poor: 0-2",
+    "AVG": (
+        "Batting Average — H / AB (week to date).\n"
+        "Calc: hits divided by at-bats.\n"
+        "Elite: .300+  •  Good: .270-.299  •  Avg: .240-.269  •  Poor: <.240"
+    ),
+    "OPS": (
+        "On-base + Slugging — week to date.\n"
+        "Calc: OBP + SLG.\n"
+        "Elite: .900+  •  Good: .800-.899  •  Avg: .700-.799  •  Poor: <.700"
+    ),
+    # Hitter advanced
+    "wOBA": (
+        "Weighted On-Base Average — season to date (computed from raw stats).\n"
+        "Calc: linear weights × singles, doubles, triples, HR, BB, HBP, "
+        "divided by PA. One number that captures all offensive value.\n"
+        "Elite: .400+  •  Good: .360-.399  •  Avg: .320-.359  •  Poor: <.310"
+    ),
+    "xwOBA": (
+        "Expected wOBA — what wOBA *should* be based on Statcast batted-ball "
+        "quality (exit velocity, launch angle), removing luck and defense.\n"
+        "If xwOBA > wOBA the player has been unlucky and is due to improve.\n"
+        "Elite: .380+  •  Good: .340-.379  •  Avg: .310-.339  •  Poor: <.300"
+    ),
+    "Barrel%": (
+        "Barrel rate — % of batted balls hit in the optimal exit-velocity / "
+        "launch-angle combo (~98+ mph at 26-30 deg). Best predictor of HR power.\n"
+        "Elite: 12%+  •  Good: 8-11%  •  Avg: 5-7%  •  Poor: <5%"
+    ),
+    "HardHit%": (
+        "Hard-hit rate — % of batted balls with exit velocity ≥ 95 mph.\n"
+        "Elite: 50%+  •  Good: 42-49%  •  Avg: 35-41%  •  Poor: <35%"
+    ),
+    "LA": (
+        "Avg Launch Angle (degrees) — vertical angle off the bat.\n"
+        "Sweet zone for damage: 8-32 degrees. Below 8 = grounders, "
+        "above 32 = pop-ups.\n"
+        "Power hitter: 15-22  •  Line-drive bat: 8-14  •  Ground-ball: <8"
+    ),
+    "SwSp%": (
+        "Sweet-Spot % — % of batted balls in the 8-32° launch-angle window.\n"
+        "Elite: 38%+  •  Good: 34-37%  •  Avg: 30-33%  •  Poor: <30%"
+    ),
+    "BatSp": (
+        "Bat Speed — Statcast percentile (0-100) for average swing speed.\n"
+        "Higher = more raw power potential. Available 2024+.\n"
+        "Elite: 90+  •  Good: 70-89  •  Avg: 40-69  •  Poor: <40"
+    ),
+    # Pitcher counting / rate
+    "W": "Wins — week to date.\nGood week: 2+  •  Avg: 1  •  Poor: 0",
+    "K": "Strikeouts — week to date.\nGood week: 12+  •  Avg: 7-11  •  Poor: <6",
+    "WHIP": (
+        "Walks + Hits per Inning Pitched (week to date). LOWEST WINS in this "
+        "league.\nCalc: (BB + H) / IP.\n"
+        "Elite: <1.00  •  Good: 1.00-1.20  •  Avg: 1.21-1.35  •  Poor: >1.35"
+    ),
+    "K/BB": (
+        "Strikeout-to-Walk ratio — week to date.\n"
+        "Calc: K / BB.\n"
+        "Elite: 5.0+  •  Good: 3.5-4.9  •  Avg: 2.5-3.4  •  Poor: <2.5"
+    ),
+    "SV+H": (
+        "Saves + Holds — week to date. Combined relief category.\n"
+        "Good week (closer): 3+  •  Avg: 1-2  •  Poor: 0"
+    ),
+    # Pitcher advanced
+    "xERA": (
+        "Expected ERA — Statcast estimate of ERA based on quality of contact "
+        "allowed (exit velocity, launch angle), removing luck/defense.\n"
+        "If xERA > ERA the pitcher has been lucky and is due to regress.\n"
+        "Elite: <3.00  •  Good: 3.00-3.75  •  Avg: 3.76-4.50  •  Poor: >4.50"
+    ),
+    "xwOBA-A": (
+        "Expected wOBA Against — what opponents' wOBA *should* be based on "
+        "their Statcast contact quality off this pitcher.\n"
+        "Elite: <.290  •  Good: .290-.310  •  Avg: .311-.330  •  Poor: >.330"
+    ),
+    "K-BB%": (
+        "Strikeout minus Walk rate — season to date (computed).\n"
+        "Calc: (K − BB) / batters faced × 100. Best single-stat measure of "
+        "pitcher dominance.\n"
+        "Elite: 20%+  •  Good: 15-19%  •  Avg: 10-14%  •  Poor: <10%"
+    ),
+    "Brl%-A": (
+        "Barrel % Against — rate of barrels (the most dangerous batted-ball "
+        "type) allowed by this pitcher. Lower is better.\n"
+        "Elite: <5%  •  Good: 5-7%  •  Avg: 8-10%  •  Poor: >10%"
+    ),
+    # Misc
+    "Slot": "Roster slot assigned by Yahoo (active position, BN, IL, NA).",
+    "Player": "Player name.",
+    "Pos": "Eligible positions.",
+    "Streak": (
+        "🔥 Hot or ❄️ Cold tag from last 7 days (hitters) / 10 days (pitchers).\n"
+        "Hitter hot: 2+ of (hit streak, AVG ≥ .320, OPS ≥ .920, recent HR/SB).\n"
+        "Pitcher hot: 2+ of (WHIP < 1.00, RA9 < 2.50, K/9 > 9.0, K/BB > 3.0)."
+    ),
+}
+
+
 def _fmt_adv(value: Any, digits: int = 3) -> str:
     """Format an advanced-stat value with a decimal style, or '—' if NaN/None."""
     try:
@@ -132,9 +239,22 @@ def _win_pct_class(pct: float) -> str:
     return "win-low"
 
 
-def _html_table(headers: list[str], rows: list[list[Any]]) -> Tag:
-    """Build a styled HTML table matching the Savant theme."""
-    th_cells = [ui.tags.th(h) for h in headers]
+def _th_tip(label: str, tip: str) -> Tag:
+    """Header cell with a native HTML tooltip (cursor changes on hover)."""
+    return ui.tags.th(
+        label,
+        title=tip,
+        style="cursor:help;border-bottom:1px dotted #6b8aa8;",
+    )
+
+
+def _html_table(headers: list[Any], rows: list[list[Any]]) -> Tag:
+    """Build a styled HTML table matching the Savant theme.
+
+    Headers may be plain strings or pre-built ``ui.tags.th(...)`` Tags
+    (used by ``_th_tip`` to attach tooltip metadata).
+    """
+    th_cells = [h if isinstance(h, Tag) else ui.tags.th(h) for h in headers]
     tbody_rows: list[Any] = []
     for row in rows:
         td_cells = [
@@ -2028,7 +2148,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         hitters = hitters.sort_values(
             by=["_slot_order", "slot", "player_name"], kind="stable"
         )
-        headers = [
+        header_labels = [
             "Slot",
             "Player",
             "Pos",
@@ -2046,6 +2166,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             "SwSp%",
             "BatSp",
             "Streak",
+        ]
+        headers: list[Any] = [
+            _th_tip(label, _ROSTER_TOOLTIPS.get(label, "")) for label in header_labels
         ]
         rows_out: list[list[Any]] = []
         for _, r in hitters.iterrows():
@@ -2085,7 +2208,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         pitchers = pitchers.sort_values(
             by=["_slot_order", "slot", "player_name"], kind="stable"
         )
-        headers = [
+        header_labels = [
             "Slot",
             "Player",
             "Pos",
@@ -2099,6 +2222,9 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             "K-BB%",
             "Brl%-A",
             "Streak",
+        ]
+        headers: list[Any] = [
+            _th_tip(label, _ROSTER_TOOLTIPS.get(label, "")) for label in header_labels
         ]
         rows_out: list[list[Any]] = []
         for _, r in pitchers.iterrows():
