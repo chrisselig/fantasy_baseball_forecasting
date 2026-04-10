@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from src.analysis.matchup_analyzer import (
+    _shrink_projection_rates,
     check_ip_pace,
     get_focus_categories,
     project_week_totals,
@@ -346,3 +347,147 @@ def test_check_ip_pace_not_on_pace() -> None:
     assert result["current_ip"] == pytest.approx(8.0)
     assert result["projected_ip"] == pytest.approx(8 + 8 / 6, abs=1e-3)
     assert result["on_pace"] is False
+
+
+# ---------------------------------------------------------------------------
+# _shrink_projection_rates: Statcast-prior shrinkage of rate components
+# ---------------------------------------------------------------------------
+
+
+def test_shrink_projection_rates_none_or_empty_advanced_passes_through() -> None:
+    stats = pd.DataFrame([_make_stats_row("p1", ab=40, bb=8, hbp=2)])
+    proj = pd.DataFrame([_make_proj_row("p1", proj_hr=1.0, proj_k=6.0)])
+
+    # Empty advanced_df: call returns projections unchanged.
+    empty_adv = pd.DataFrame(
+        columns=["player_id", "xwoba", "barrel_pct", "xwoba_against", "k_bb_pct"]
+    )
+    result = _shrink_projection_rates(proj, stats, empty_adv)
+    assert result.iloc[0]["proj_hr"] == pytest.approx(1.0)
+    assert result.iloc[0]["proj_k"] == pytest.approx(6.0)
+
+    # project_week_totals with advanced_df=None also passes through.
+    via_public = project_week_totals(stats, proj, days_remaining=1, advanced_df=None)
+    assert len(via_public) == 1
+
+
+def test_shrink_projection_rates_regresses_hot_hr_toward_barrel_prior() -> None:
+    # Hot hitter pacing 1 HR/game but modest 10% Barrel — prior HR/PA = 0.06.
+    # n_pa = 50; stabilization K = 170 → heavy pull toward prior.
+    stats = pd.DataFrame([_make_stats_row("p1", ab=40, bb=8, hbp=2, sf=0)])
+    proj = pd.DataFrame([_make_proj_row("p1", proj_hr=1.0)])
+    adv = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "xwoba": 0.340,
+                "barrel_pct": 10.0,
+                "xwoba_against": None,
+                "k_bb_pct": None,
+            }
+        ]
+    )
+    result = _shrink_projection_rates(proj, stats, adv)
+    shrunk_hr = result.iloc[0]["proj_hr"]
+    # Expected: (50 * (1.0/4.3) + 170 * 0.06) / 220 * 4.3 ≈ 0.4266
+    assert shrunk_hr == pytest.approx(0.4266, abs=1e-3)
+    # Other columns untouched.
+    assert result.iloc[0]["proj_k"] == pytest.approx(5.0)
+
+
+def test_shrink_projection_rates_pulls_low_k_up_toward_kbb_prior() -> None:
+    # Pitcher with BF ≈ 100 (ip=20, ha=30, wa=10 → 60+30+10=100).
+    # proj_k=4/game is below the K-BB% 20 → prior 0.28 K/BF implied level.
+    stats = pd.DataFrame(
+        [_make_stats_row("pit1", ip=20.0, hits_allowed=30, walks_allowed=10, k=20)]
+    )
+    proj = pd.DataFrame([_make_proj_row("pit1", proj_k=4.0)])
+    adv = pd.DataFrame(
+        [
+            {
+                "player_id": "pit1",
+                "xwoba": None,
+                "barrel_pct": None,
+                "xwoba_against": None,
+                "k_bb_pct": 20.0,
+            }
+        ]
+    )
+    result = _shrink_projection_rates(proj, stats, adv)
+    shrunk_k = result.iloc[0]["proj_k"]
+    # Expected: (100*(4/38.7) + 70*0.28)/170 * 38.7 ≈ 6.81
+    assert shrunk_k == pytest.approx(6.81, abs=1e-2)
+    # Observed is below prior → shrunk K should be higher than proj_k.
+    assert shrunk_k > 4.0
+    assert shrunk_k < 0.28 * 38.7  # but below the raw prior
+
+
+def test_shrink_projection_rates_splits_walks_and_hits_proportionally() -> None:
+    # BF = 100 (ip=20, ha=30, wa=10). proj_wa=3, proj_ha=7, combined=10/game.
+    # xwoba_against=0.30 → WHIP prior=1.21 → prior_per_bf=1.21/4.3≈0.2814.
+    stats = pd.DataFrame(
+        [_make_stats_row("pit1", ip=20.0, hits_allowed=30, walks_allowed=10, k=20)]
+    )
+    proj = pd.DataFrame(
+        [_make_proj_row("pit1", proj_walks_allowed=3.0, proj_hits_allowed=7.0)]
+    )
+    adv = pd.DataFrame(
+        [
+            {
+                "player_id": "pit1",
+                "xwoba": None,
+                "barrel_pct": None,
+                "xwoba_against": 0.30,
+                "k_bb_pct": None,
+            }
+        ]
+    )
+    result = _shrink_projection_rates(proj, stats, adv)
+    new_wa = result.iloc[0]["proj_walks_allowed"]
+    new_ha = result.iloc[0]["proj_hits_allowed"]
+    # shrunk_per_bf = (100*(10/38.7) + 770*(1.21/4.3))/870 ≈ 0.2787
+    # shrunk_combined = 0.2787*38.7 ≈ 10.79
+    combined = new_wa + new_ha
+    assert combined == pytest.approx(10.79, abs=5e-2)
+    # Split preserved: original 30% walks / 70% hits.
+    assert new_wa / combined == pytest.approx(0.30, abs=1e-6)
+    assert new_ha / combined == pytest.approx(0.70, abs=1e-6)
+
+
+def test_shrink_projection_rates_missing_player_passes_through() -> None:
+    # Player has no matching row in advanced_df → projection untouched.
+    stats = pd.DataFrame([_make_stats_row("ghost", ab=40, bb=8)])
+    proj = pd.DataFrame([_make_proj_row("ghost", proj_hr=0.8, proj_k=7.0)])
+    adv = pd.DataFrame(
+        [
+            {
+                "player_id": "someone_else",
+                "xwoba": 0.340,
+                "barrel_pct": 10.0,
+                "xwoba_against": 0.30,
+                "k_bb_pct": 20.0,
+            }
+        ]
+    )
+    result = _shrink_projection_rates(proj, stats, adv)
+    assert result.iloc[0]["proj_hr"] == pytest.approx(0.8)
+    assert result.iloc[0]["proj_k"] == pytest.approx(7.0)
+
+
+def test_shrink_projection_rates_zero_pa_leaves_hr_unchanged() -> None:
+    # No accumulated PA → no shrinkage weight → pass through.
+    stats = pd.DataFrame([_make_stats_row("p1", ab=0, bb=0, hbp=0, sf=0)])
+    proj = pd.DataFrame([_make_proj_row("p1", proj_hr=0.5)])
+    adv = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "xwoba": 0.340,
+                "barrel_pct": 10.0,
+                "xwoba_against": None,
+                "k_bb_pct": None,
+            }
+        ]
+    )
+    result = _shrink_projection_rates(proj, stats, adv)
+    assert result.iloc[0]["proj_hr"] == pytest.approx(0.5)

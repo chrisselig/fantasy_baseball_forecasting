@@ -549,8 +549,23 @@ def _step_run_analysis(
     week_end = week_start + datetime.timedelta(days=6)
     days_remaining = max(0, (week_end - today).days)
 
-    my_totals = project_week_totals(my_stats_df, my_proj_df, days_remaining)
-    opp_totals = project_week_totals(opp_stats_df, opp_proj_df, days_remaining)
+    # Pre-fetch advanced stats so projection rates can be shrunk toward
+    # Statcast priors before being used to project the week.
+    _all_player_ids: list[str] = []
+    if not my_roster_df.empty and "player_id" in my_roster_df.columns:
+        _all_player_ids += my_roster_df["player_id"].astype(str).tolist()
+    if not opp_roster_df.empty and "player_id" in opp_roster_df.columns:
+        _all_player_ids += opp_roster_df["player_id"].astype(str).tolist()
+    advanced_df_for_proj = _query_advanced_stats(
+        conn, list(set(_all_player_ids)), season
+    )
+
+    my_totals = project_week_totals(
+        my_stats_df, my_proj_df, days_remaining, advanced_df=advanced_df_for_proj
+    )
+    opp_totals = project_week_totals(
+        opp_stats_df, opp_proj_df, days_remaining, advanced_df=advanced_df_for_proj
+    )
 
     # Aggregate to team-level (one row each)
     my_team_totals = _aggregate_to_team(my_totals)
