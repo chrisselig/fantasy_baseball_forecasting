@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import duckdb
@@ -211,6 +212,148 @@ def _fmt_adv(value: Any, digits: int = 3) -> str:
     return f"{f:.{digits}f}"
 
 
+# ── Roster stat tier colouring ────────────────────────────────────────────
+#
+# Each roster stat has tooltip-documented thresholds for Elite / Great /
+# Average / Poor. ``_STAT_TIER_FNS`` maps a stat key to a function that
+# returns the tier name for a given numeric value. Counting stats that have
+# only three documented buckets (H, HR, SB, BB, W, K, SV+H) skip the Elite
+# tier by passing ``None`` as the elite cutoff.
+
+_TIER_COLORS: dict[str, str] = {
+    "elite": "#1b5e20",  # dark green
+    "great": "#2e7d32",  # green
+    "average": "#b8860b",  # amber
+    "poor": "#c62828",  # red
+}
+
+_TIER_ORDER: tuple[str, ...] = ("elite", "great", "average", "poor")
+
+
+def _tier_higher(v: float, elite: float | None, great: float, average: float) -> str:
+    """Tier for a higher-is-better stat. ``elite=None`` skips the elite tier."""
+    if elite is not None and v >= elite:
+        return "elite"
+    if v >= great:
+        return "great"
+    if v >= average:
+        return "average"
+    return "poor"
+
+
+def _tier_lower(v: float, elite: float, great: float, average: float) -> str:
+    """Tier for a lower-is-better stat (WHIP, xERA, xwOBA-A, Brl%-A)."""
+    if v < elite:
+        return "elite"
+    if v <= great:
+        return "great"
+    if v <= average:
+        return "average"
+    return "poor"
+
+
+def _tier_launch_angle(v: float) -> str:
+    """Tier for Avg Launch Angle — a range-type stat (no elite tier).
+
+    Power zone 15–22, line-drive zone 8–14 or 23–32, else poor.
+    """
+    if 15 <= v <= 22:
+        return "great"
+    if 8 <= v < 15 or 22 < v <= 32:
+        return "average"
+    return "poor"
+
+
+_STAT_TIER_FNS: dict[str, Callable[[float], str]] = {
+    # Hitter counting — 3-tier (no elite)
+    "h": lambda v: _tier_higher(v, None, 10, 6),
+    "hr": lambda v: _tier_higher(v, None, 2, 1),
+    "sb": lambda v: _tier_higher(v, None, 2, 1),
+    "bb": lambda v: _tier_higher(v, None, 5, 3),
+    # Hitter rate — 4-tier
+    "avg": lambda v: _tier_higher(v, 0.300, 0.270, 0.240),
+    "ops": lambda v: _tier_higher(v, 0.900, 0.800, 0.700),
+    "woba": lambda v: _tier_higher(v, 0.400, 0.360, 0.320),
+    "xwoba": lambda v: _tier_higher(v, 0.380, 0.340, 0.310),
+    "barrel_pct": lambda v: _tier_higher(v, 12, 8, 5),
+    "hard_hit_pct": lambda v: _tier_higher(v, 50, 42, 35),
+    "sweet_spot_pct": lambda v: _tier_higher(v, 38, 34, 30),
+    "bat_speed_pctile": lambda v: _tier_higher(v, 90, 70, 40),
+    "avg_launch_angle": _tier_launch_angle,
+    # Pitcher counting — 3-tier
+    "w": lambda v: _tier_higher(v, None, 2, 1),
+    "k": lambda v: _tier_higher(v, None, 12, 7),
+    "sv_h": lambda v: _tier_higher(v, None, 3, 1),
+    # Pitcher rate — lower is better
+    "whip": lambda v: _tier_lower(v, 1.00, 1.20, 1.35),
+    "xera": lambda v: _tier_lower(v, 3.00, 3.75, 4.50),
+    "xwoba_against": lambda v: _tier_lower(v, 0.290, 0.310, 0.330),
+    "barrel_pct_against": lambda v: _tier_lower(v, 5, 7, 10),
+    # Pitcher rate — higher is better
+    "k_bb": lambda v: _tier_higher(v, 5.0, 3.5, 2.5),
+    "k_bb_pct": lambda v: _tier_higher(v, 20, 15, 10),
+}
+
+
+def _tier_for(stat_key: str, value: Any) -> str | None:
+    """Return the tier name for ``value`` under ``stat_key`` (or None)."""
+    fn = _STAT_TIER_FNS.get(stat_key)
+    if fn is None or value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(v):
+        return None
+    return fn(v)
+
+
+def _color_tier(display: str, tier: str | None) -> Any:
+    """Wrap ``display`` in a coloured span for its tier, or pass through."""
+    if tier is None or display in ("", "—"):
+        return display
+    color = _TIER_COLORS.get(tier)
+    if color is None:
+        return display
+    return ui.tags.span(display, style=f"color:{color};font-weight:700;")
+
+
+def _fmt_stat_tier(value: Any, stat_key: str, *, per_game: bool = False) -> Any:
+    """``_fmt_stat`` wrapped in tier colour based on ``stat_key``."""
+    return _color_tier(
+        _fmt_stat(value, stat_key, per_game=per_game),
+        _tier_for(stat_key, value),
+    )
+
+
+def _fmt_adv_tier(value: Any, stat_key: str, digits: int) -> Any:
+    """``_fmt_adv`` wrapped in tier colour based on ``stat_key``."""
+    return _color_tier(_fmt_adv(value, digits), _tier_for(stat_key, value))
+
+
+def _roster_tier_legend() -> Tag:
+    """Compact horizontal legend: Elite / Great / Average / Poor swatches."""
+    swatch_style = (
+        "display:inline-block;width:12px;height:12px;border-radius:2px;"
+        "margin-right:4px;vertical-align:middle;"
+    )
+    item_style = (
+        "display:inline-flex;align-items:center;margin-right:14px;"
+        "font-size:0.72rem;color:#556;font-weight:600;"
+    )
+    items: list[Any] = []
+    for tier in _TIER_ORDER:
+        items.append(
+            ui.tags.span(
+                ui.tags.span(style=f"{swatch_style}background:{_TIER_COLORS[tier]};"),
+                tier.capitalize(),
+                style=item_style,
+            )
+        )
+    return ui.div(*items, style="margin:0.15rem 0 0.4rem 0;")
+
+
 def _roster_slot_order(slot: Any) -> int:
     """Sort key so active slots appear first, then BN, then IL/NA."""
     s = str(slot).strip().upper()
@@ -249,13 +392,45 @@ def _th_tip(label: str, tip: str) -> Tag:
     )
 
 
-def _html_table(headers: list[Any], rows: list[list[Any]]) -> Tag:
+def _html_table(
+    headers: list[Any],
+    rows: list[list[Any]],
+    *,
+    group_headers: list[tuple[str, int]] | None = None,
+) -> Tag:
     """Build a styled HTML table matching the Savant theme.
 
     Headers may be plain strings or pre-built ``ui.tags.th(...)`` Tags
     (used by ``_th_tip`` to attach tooltip metadata).
+
+    ``group_headers`` optionally renders a second header row *above* the
+    column headers, where each entry is ``(label, colspan)``. An empty
+    label renders as a spacer cell with no label.
     """
     th_cells = [h if isinstance(h, Tag) else ui.tags.th(h) for h in headers]
+    thead_rows: list[Any] = []
+    if group_headers:
+        group_cells: list[Any] = []
+        for label, span in group_headers:
+            if label:
+                group_cells.append(
+                    ui.tags.th(
+                        label,
+                        colspan=str(span),
+                        style=(
+                            "text-align:center;background:#eef3f8;"
+                            "color:#132747;font-size:0.72rem;"
+                            "letter-spacing:0.04em;text-transform:uppercase;"
+                            "border-bottom:2px solid #c5d2e0;"
+                        ),
+                    )
+                )
+            else:
+                group_cells.append(
+                    ui.tags.th("", colspan=str(span), style="background:transparent;")
+                )
+        thead_rows.append(ui.tags.tr(*group_cells))
+    thead_rows.append(ui.tags.tr(*th_cells))
     tbody_rows: list[Any] = []
     for row in rows:
         td_cells = [
@@ -264,7 +439,7 @@ def _html_table(headers: list[Any], rows: list[list[Any]]) -> Tag:
         ]
         tbody_rows.append(ui.tags.tr(*td_cells))
     return ui.tags.table(
-        ui.tags.thead(ui.tags.tr(*th_cells)),
+        ui.tags.thead(*thead_rows),
         ui.tags.tbody(*tbody_rows),
         class_="shiny-data-frame table table-sm",
         style="width:100%;",
@@ -2505,23 +2680,28 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     str(r.get("slot", "")),
                     str(r.get("player_name", "")),
                     str(r.get("position", "")),
-                    _fmt_stat(r.get("h"), "h"),
-                    _fmt_stat(r.get("hr"), "hr"),
-                    _fmt_stat(r.get("sb"), "sb"),
-                    _fmt_stat(r.get("bb"), "bb"),
-                    _fmt_stat(r.get("avg"), "avg"),
-                    _fmt_stat(r.get("ops"), "ops"),
-                    _fmt_adv(r.get("woba"), 3),
-                    _fmt_adv(r.get("xwoba"), 3),
-                    _fmt_adv(r.get("barrel_pct"), 1),
-                    _fmt_adv(r.get("hard_hit_pct"), 1),
-                    _fmt_adv(r.get("avg_launch_angle"), 1),
-                    _fmt_adv(r.get("sweet_spot_pct"), 1),
-                    _fmt_adv(r.get("bat_speed_pctile"), 0),
+                    _fmt_stat_tier(r.get("h"), "h"),
+                    _fmt_stat_tier(r.get("hr"), "hr"),
+                    _fmt_stat_tier(r.get("sb"), "sb"),
+                    _fmt_stat_tier(r.get("bb"), "bb"),
+                    _fmt_stat_tier(r.get("avg"), "avg"),
+                    _fmt_stat_tier(r.get("ops"), "ops"),
+                    _fmt_adv_tier(r.get("woba"), "woba", 3),
+                    _fmt_adv_tier(r.get("xwoba"), "xwoba", 3),
+                    _fmt_adv_tier(r.get("barrel_pct"), "barrel_pct", 1),
+                    _fmt_adv_tier(r.get("hard_hit_pct"), "hard_hit_pct", 1),
+                    _fmt_adv_tier(r.get("avg_launch_angle"), "avg_launch_angle", 1),
+                    _fmt_adv_tier(r.get("sweet_spot_pct"), "sweet_spot_pct", 1),
+                    _fmt_adv_tier(r.get("bat_speed_pctile"), "bat_speed_pctile", 0),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
-        return _html_table(headers, rows_out)
+        # 3 identity cols, 6 weekly (H..OPS), 7 season Savant, 1 streak.
+        group_headers = [("", 3), ("Weekly", 6), ("Seasonal", 7), ("", 1)]
+        return ui.div(
+            _roster_tier_legend(),
+            _html_table(headers, rows_out, group_headers=group_headers),
+        )
 
     @render.ui
     def pitcher_roster_ui() -> Tag:
@@ -2556,35 +2736,31 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         ]
         rows_out: list[list[Any]] = []
         for _, r in pitchers.iterrows():
-            whip_val = float(r.get("whip", 0.0))
-            whip_color = (
-                "#2e7d32"
-                if whip_val < 1.00
-                else "#e65100"
-                if whip_val < 1.30
-                else "#c62828"
-            )
+            whip_raw = r.get("whip")
+            whip_val_for_tier = whip_raw if whip_raw not in (None, "") else None
             rows_out.append(
                 [
                     str(r.get("slot", "")),
                     str(r.get("player_name", "")),
                     str(r.get("position", "")),
-                    _fmt_stat(r.get("w", "—"), "w"),
-                    _fmt_stat(r.get("k", "—"), "k"),
-                    ui.tags.span(
-                        _fmt_stat(whip_val, "whip") if whip_val else "—",
-                        style=f"color:{whip_color};font-weight:600;",
-                    ),
-                    _fmt_stat(r.get("k_bb", 0.0), "k_bb"),
-                    _fmt_stat(r.get("sv_h", "—"), "sv_h"),
-                    _fmt_adv(r.get("xera"), 2),
-                    _fmt_adv(r.get("xwoba_against"), 3),
-                    _fmt_adv(r.get("k_bb_pct"), 1),
-                    _fmt_adv(r.get("barrel_pct_against"), 1),
+                    _fmt_stat_tier(r.get("w"), "w"),
+                    _fmt_stat_tier(r.get("k"), "k"),
+                    _fmt_stat_tier(whip_val_for_tier, "whip"),
+                    _fmt_stat_tier(r.get("k_bb"), "k_bb"),
+                    _fmt_stat_tier(r.get("sv_h"), "sv_h"),
+                    _fmt_adv_tier(r.get("xera"), "xera", 2),
+                    _fmt_adv_tier(r.get("xwoba_against"), "xwoba_against", 3),
+                    _fmt_adv_tier(r.get("k_bb_pct"), "k_bb_pct", 1),
+                    _fmt_adv_tier(r.get("barrel_pct_against"), "barrel_pct_against", 1),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
-        return _html_table(headers, rows_out)
+        # 3 identity cols, 5 weekly (W..SV+H), 4 season Savant, 1 streak.
+        group_headers = [("", 3), ("Weekly", 5), ("Seasonal", 4), ("", 1)]
+        return ui.div(
+            _roster_tier_legend(),
+            _html_table(headers, rows_out, group_headers=group_headers),
+        )
 
     # ── Transactions ──────────────────────────────────────────────────────
 
