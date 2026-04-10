@@ -47,6 +47,7 @@ from src.analysis.matchup_analyzer import (
     score_categories,
 )
 from src.analysis.news import build_news_df
+from src.analysis.shrinkage import apply_shrinkage_to_rates
 from src.analysis.waiver_ranker import rank_free_agents
 from src.api import mlb_client
 from src.api.yahoo_client import YahooClient, set_stat_id_mapping
@@ -583,9 +584,10 @@ def _step_run_analysis(
         if not my_roster_df.empty and "player_id" in my_roster_df.columns
         else []
     )
-    rates_df = _query_player_rates(
-        conn, list(set(fa_ids + roster_ids)), season_start, today
-    )
+    all_ids = list(set(fa_ids + roster_ids))
+    rates_df = _query_player_rates(conn, all_ids, season_start, today)
+    advanced_df = _query_advanced_stats(conn, all_ids, season)
+    rates_df = apply_shrinkage_to_rates(rates_df, advanced_df)
     fa_enriched = _enrich_with_rates(fa_df, rates_df)
     my_roster_enriched = _enrich_with_rates(my_roster_df, rates_df)
 
@@ -949,6 +951,45 @@ def _query_player_rates(
     out["k_bb"] = (raw["k_sum"] / walks).where(walks > 0, 0.0)
 
     return out[cols]
+
+
+def _query_advanced_stats(
+    conn: duckdb.DuckDBPyConnection,
+    player_ids: list[str],
+    season: int,
+) -> pd.DataFrame:
+    """Return Baseball Savant advanced stats for the given players + season.
+
+    Used by the shrinkage layer to pull xwOBA, Barrel%, xwOBA-against, and
+    K-BB% priors for early-season rate-stat shrinkage.
+    """
+    cols = [
+        "player_id",
+        "xwoba",
+        "barrel_pct",
+        "xwoba_against",
+        "k_bb_pct",
+    ]
+    if not player_ids:
+        return pd.DataFrame(columns=cols)
+    placeholders = ", ".join(["?" for _ in player_ids])
+    try:
+        df: pd.DataFrame = conn.execute(
+            f"""
+            SELECT player_id, xwoba, barrel_pct, xwoba_against, k_bb_pct
+            FROM {FACT_PLAYER_ADVANCED_STATS}
+            WHERE season = ?
+              AND player_id IN ({placeholders})
+            """,
+            [season, *player_ids],
+        ).fetchdf()
+    except duckdb.Error as exc:
+        logger.warning("Advanced stats query failed: %s", exc)
+        return pd.DataFrame(columns=cols)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df["player_id"] = df["player_id"].astype(str)
+    return df
 
 
 def _enrich_with_rates(
