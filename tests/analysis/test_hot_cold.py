@@ -259,3 +259,149 @@ def test_mwp_favored() -> None:
 
 def test_mwp_empty() -> None:
     assert match_win_probability([]) == pytest.approx(0.0)
+
+
+# ── Prior-based streak path ────────────────────────────────────────────────
+
+
+def test_hitter_prior_hot_when_above_xwoba_baseline() -> None:
+    # League-average xwOBA hitter (.320 → prior OPS ~.735), but smashing
+    # the ball over the last week (.500 / 1.000+ OPS).
+    rows = [
+        _hitter_row("p1", f"2025-06-0{i}", h=2, ab=4, hr=1, tb=6) for i in range(1, 8)
+    ]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "p1", "xwoba": 0.320, "xwoba_against": None}]
+    )
+    label = streak_label(
+        "p1",
+        daily,
+        is_pitcher=False,
+        reference_date=datetime.date(2025, 6, 8),
+        advanced_df=advanced,
+    )
+    assert label == _HOT
+
+
+def test_hitter_prior_cold_when_below_xwoba_baseline() -> None:
+    # Elite hitter prior (.380 xwOBA → ~.91 OPS), but slumping (.100 / .200 OPS)
+    rows = [_hitter_row("p1", f"2025-06-0{i}", h=0, ab=4) for i in range(1, 8)]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "p1", "xwoba": 0.380, "xwoba_against": None}]
+    )
+    label = streak_label(
+        "p1",
+        daily,
+        is_pitcher=False,
+        reference_date=datetime.date(2025, 6, 8),
+        advanced_df=advanced,
+    )
+    assert label == _COLD
+
+
+def test_hitter_prior_neutral_when_matching_baseline() -> None:
+    # Player roughly matching league-average prior — should be neutral
+    rows = [_hitter_row("p1", f"2025-06-0{i}", h=1, ab=4, tb=2) for i in range(1, 8)]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "p1", "xwoba": 0.320, "xwoba_against": None}]
+    )
+    label = streak_label(
+        "p1",
+        daily,
+        is_pitcher=False,
+        reference_date=datetime.date(2025, 6, 8),
+        advanced_df=advanced,
+    )
+    assert label == _NEUTRAL
+
+
+def test_pitcher_prior_hot_when_below_whip_baseline() -> None:
+    # League-average pitcher prior (.310 xwOBA-against → WHIP ~1.27)
+    # but recent 10-day WHIP at 0.50 → easily Hot.
+    rows = [
+        _pitcher_row("p2", "2025-06-05", ip=6.0, k=8, walks_allowed=1, hits_allowed=2),
+        _pitcher_row("p2", "2025-06-01", ip=6.0, k=7, walks_allowed=1, hits_allowed=2),
+    ]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "p2", "xwoba": None, "xwoba_against": 0.310}]
+    )
+    label = streak_label(
+        "p2",
+        daily,
+        is_pitcher=True,
+        reference_date=datetime.date(2025, 6, 6),
+        advanced_df=advanced,
+    )
+    assert label == _HOT
+
+
+def test_pitcher_prior_cold_when_above_whip_baseline() -> None:
+    # Elite pitcher prior (.260 xwOBA-against → WHIP ~0.98) but blown up
+    # recently (~2.50 WHIP).
+    rows = [
+        _pitcher_row("p2", "2025-06-05", ip=4.0, k=2, walks_allowed=4, hits_allowed=6),
+        _pitcher_row("p2", "2025-06-01", ip=4.0, k=2, walks_allowed=3, hits_allowed=7),
+    ]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "p2", "xwoba": None, "xwoba_against": 0.260}]
+    )
+    label = streak_label(
+        "p2",
+        daily,
+        is_pitcher=True,
+        reference_date=datetime.date(2025, 6, 6),
+        advanced_df=advanced,
+    )
+    assert label == _COLD
+
+
+def test_prior_path_falls_back_to_season_baseline_when_no_advanced_row() -> None:
+    # Player not in advanced_df → should use season baseline (the daily df
+    # itself). With identical season and recent rates the result is neutral.
+    rows = [_hitter_row("p1", f"2025-06-0{i}", h=1, ab=4, tb=1) for i in range(1, 8)]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "OTHER", "xwoba": 0.320, "xwoba_against": None}]
+    )
+    label = streak_label(
+        "p1",
+        daily,
+        is_pitcher=False,
+        reference_date=datetime.date(2025, 6, 8),
+        advanced_df=advanced,
+    )
+    assert label == _NEUTRAL
+
+
+def test_legacy_binary_path_used_when_no_advanced_df() -> None:
+    # Without advanced_df, the existing 4-of-4 path should be used and
+    # produce the same result as before.
+    rows = [_hitter_row("p1", f"2025-06-0{i}", h=0, ab=4) for i in range(1, 8)]
+    daily = pd.DataFrame(rows)
+    label = streak_label(
+        "p1", daily, is_pitcher=False, reference_date=datetime.date(2025, 6, 8)
+    )
+    assert label == _COLD
+
+
+def test_annotate_with_streaks_passes_advanced_df() -> None:
+    rows = [
+        _hitter_row("p1", f"2025-06-0{i}", h=2, ab=4, hr=1, tb=6) for i in range(1, 8)
+    ]
+    daily = pd.DataFrame(rows)
+    advanced = pd.DataFrame(
+        [{"player_id": "p1", "xwoba": 0.320, "xwoba_against": None}]
+    )
+    df = pd.DataFrame([{"player_id": "p1", "position": "OF"}])
+    out = annotate_with_streaks(
+        df,
+        daily,
+        reference_date=datetime.date(2025, 6, 8),
+        advanced_df=advanced,
+    )
+    assert out.iloc[0]["streak"] == _HOT
