@@ -32,6 +32,7 @@ from src.pipeline.daily_run import (
     _get_week_start,
     _my_team_key,
     _query_weekly_acquisitions,
+    _step_load_player_news,
     _step_log_pipeline_run,
     _step_write_daily_report,
     _update_waiver_scores,
@@ -851,3 +852,124 @@ def test_serialize_waiver_rankings_handles_nan():
     assert out[0]["h"] is None
     assert out[0]["days_since_callup"] is None
     json.dumps(out)  # must not raise
+
+
+# ── _step_load_player_news ─────────────────────────────────────────────────────
+
+
+class TestStepLoadPlayerNews:
+    def _seed_roster(self, conn: duckdb.DuckDBPyConnection) -> None:
+        now = datetime.datetime.now(datetime.UTC)
+        dp = pd.DataFrame(
+            [
+                {
+                    "player_id": "p1",
+                    "mlb_id": 111,
+                    "fg_id": None,
+                    "full_name": "Aaron Judge",
+                    "team": "NYY",
+                    "positions": ["OF"],
+                    "bats": "R",
+                    "throws": "R",
+                    "status": "Active",
+                    "updated_at": now,
+                },
+                {
+                    "player_id": "p2",
+                    "mlb_id": 222,
+                    "fg_id": None,
+                    "full_name": "Shohei Ohtani",
+                    "team": "LAD",
+                    "positions": ["SP", "OF"],
+                    "bats": "L",
+                    "throws": "R",
+                    "status": "Active",
+                    "updated_at": now,
+                },
+            ]
+        )
+        conn.register("_tmp_dp", dp)
+        conn.execute("INSERT INTO dim_players SELECT * FROM _tmp_dp")
+        conn.unregister("_tmp_dp")
+
+        rosters = pd.DataFrame(
+            [
+                {
+                    "team_id": "t1",
+                    "player_id": "p1",
+                    "snapshot_date": datetime.date(2026, 4, 9),
+                    "roster_slot": "OF",
+                    "acquisition_type": "draft",
+                },
+                {
+                    "team_id": "t1",
+                    "player_id": "p2",
+                    "snapshot_date": datetime.date(2026, 4, 9),
+                    "roster_slot": "SP",
+                    "acquisition_type": "draft",
+                },
+            ]
+        )
+        conn.register("_tmp_r", rosters)
+        conn.execute("INSERT INTO fact_rosters SELECT * FROM _tmp_r")
+        conn.unregister("_tmp_r")
+
+    def test_empty_rosters_returns_empty(self, conn: duckdb.DuckDBPyConnection) -> None:
+        result = _step_load_player_news(conn, datetime.date(2026, 4, 9))
+        assert result == {}
+
+    def test_calls_build_news_and_loads(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._seed_roster(conn)
+
+        captured: dict[str, pd.DataFrame] = {}
+
+        def fake_build_news_df(
+            roster_df: pd.DataFrame, max_per_player: int = 5
+        ) -> pd.DataFrame:
+            captured["roster"] = roster_df
+            now = datetime.datetime.now(datetime.UTC)
+            return pd.DataFrame(
+                [
+                    {
+                        "id": "h1",
+                        "player_id": "p1",
+                        "player_name": "Aaron Judge",
+                        "headline": "Judge homers",
+                        "url": "https://example.com/1",
+                        "source": "Example",
+                        "published_at": now,
+                        "sentiment_label": "Good",
+                        "sentiment_score": 0.5,
+                        "fetched_at": now,
+                    }
+                ]
+            )
+
+        monkeypatch.setattr("src.pipeline.daily_run.build_news_df", fake_build_news_df)
+
+        result = _step_load_player_news(conn, datetime.date(2026, 4, 9))
+        assert result == {"fact_player_news": 1}
+        assert set(captured["roster"]["player_name"]) == {
+            "Aaron Judge",
+            "Shohei Ohtani",
+        }
+        n = conn.execute("SELECT COUNT(*) FROM fact_player_news").fetchone()
+        assert n is not None and n[0] == 1
+
+    def test_build_news_failure_is_non_blocking(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._seed_roster(conn)
+
+        def boom(*args: object, **kwargs: object) -> pd.DataFrame:
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr("src.pipeline.daily_run.build_news_df", boom)
+        result = _step_load_player_news(conn, datetime.date(2026, 4, 9))
+        assert result == {}
