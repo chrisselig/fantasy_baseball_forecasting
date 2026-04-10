@@ -13,6 +13,9 @@ import pandas as pd
 import pytest
 
 from src.analysis.waiver_ranker import (
+    _ALPHA_EARLY,
+    _ALPHA_LATE,
+    alpha_from_season_progress,
     find_recommended_drop,
     rank_free_agents,
     score_free_agent,
@@ -497,3 +500,107 @@ def test_score_free_agent_pitcher_skips_hitting_cats(config: object) -> None:
     # Hitting categories should all be 0 (pitcher skips them)
     for hit_cat in ("h", "hr", "sb", "bb", "avg", "ops", "fpct"):
         assert cat_scores.get(hit_cat, 0.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 9. Talent vs Fit decomposition + α blend
+# ---------------------------------------------------------------------------
+
+
+def test_score_free_agent_returns_talent_and_fit_components(config: object) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+    roster = _make_roster_df()
+    matchup = _make_matchup_df()
+    player = _make_player_row("fa1", hr=2.0, h=4.0)
+
+    result = score_free_agent(player, roster, matchup, config)
+
+    assert "talent_score" in result
+    assert "fit_score" in result
+    assert "weighted_score" in result
+    assert "overall_score" in result
+    # Legacy contract: overall_score from a single-player call equals weighted_score.
+    assert result["overall_score"] == result["weighted_score"]
+
+
+def test_alpha_decays_with_season_progress() -> None:
+    early = alpha_from_season_progress(0.0)
+    mid = alpha_from_season_progress(0.5)
+    late = alpha_from_season_progress(1.0)
+    assert early == pytest.approx(_ALPHA_EARLY)
+    assert late == pytest.approx(_ALPHA_LATE)
+    assert early > mid > late
+    # Out-of-range clamping
+    assert alpha_from_season_progress(-0.5) == pytest.approx(_ALPHA_EARLY)
+    assert alpha_from_season_progress(1.5) == pytest.approx(_ALPHA_LATE)
+
+
+def test_rank_free_agents_blends_talent_and_fit(config: object) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+    roster = _make_roster_df()
+    callups = pd.DataFrame(columns=["player_id", "days_since_callup"])
+
+    # One category flippable so fit_score has a clear winner
+    matchup = _make_matchup_df(
+        {
+            "h": "safe_win",
+            "hr": "flippable_loss",
+            "sb": "safe_win",
+            "bb": "safe_win",
+            "fpct": "safe_win",
+            "avg": "safe_win",
+            "ops": "safe_win",
+            "w": "safe_win",
+            "k": "safe_win",
+            "whip": "safe_win",
+            "k_bb": "safe_win",
+            "sv_h": "safe_win",
+        }
+    )
+
+    fa_hr = _make_player_row("fa_hr", hr=4.0, h=1.0).to_dict()
+    fa_h = _make_player_row("fa_h", hr=0.0, h=8.0).to_dict()
+    free_agents = pd.DataFrame([fa_hr, fa_h])
+
+    early = rank_free_agents(
+        free_agents, roster, matchup, callups, config, season_progress=0.0
+    )
+    late = rank_free_agents(
+        free_agents, roster, matchup, callups, config, season_progress=1.0
+    )
+
+    # Pull each player's overall_score in early vs late
+    early_hr = float(early.loc[early["player_id"] == "fa_hr", "overall_score"].iloc[0])
+    early_h = float(early.loc[early["player_id"] == "fa_h", "overall_score"].iloc[0])
+    late_hr = float(late.loc[late["player_id"] == "fa_hr", "overall_score"].iloc[0])
+    late_h = float(late.loc[late["player_id"] == "fa_h", "overall_score"].iloc[0])
+
+    # Late season weights fit higher → fa_hr's flippable HR advantage matters more.
+    # The fa_hr − fa_h gap should be larger late season than early season.
+    early_gap = early_hr - early_h
+    late_gap = late_hr - late_h
+    assert late_gap > early_gap, (
+        f"Late-season gap should exceed early-season gap. "
+        f"early_gap={early_gap:.3f}, late_gap={late_gap:.3f}"
+    )
+
+
+def test_rank_free_agents_exposes_components(config: object) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+    roster = _make_roster_df()
+    matchup = _make_matchup_df()
+    callups = pd.DataFrame(columns=["player_id", "days_since_callup"])
+
+    free_agents = pd.DataFrame([_make_player_row("fa1", hr=2.0).to_dict()])
+    result = rank_free_agents(free_agents, roster, matchup, callups, config)
+
+    assert "talent_score" in result.columns
+    assert "fit_score" in result.columns
+    assert "weighted_score" in result.columns
+    assert "overall_score" in result.columns

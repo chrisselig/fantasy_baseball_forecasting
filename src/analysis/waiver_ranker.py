@@ -46,6 +46,18 @@ _STATUS_WEIGHTS: dict[str, float] = {
     "flippable_loss": 2.5,
 }
 
+# Talent vs Fit blend (α). The final overall_score is
+#   overall_score = α × talent_score + (1 − α) × fit_score
+# where talent_score is the sum of *unweighted* z-scores (matchup-blind value
+# above replacement) and fit_score is the matchup-aware subset (flippable +
+# toss-up cats). α should be high early in the season (matchup category
+# statuses come from tiny samples and are unreliable) and decay as the season
+# progresses (late-season standings/needs become decisive). The mapping is
+# linear: α = clamp(α_max − (α_max − α_min) × season_progress, α_min, α_max).
+_ALPHA_EARLY = 0.55
+_ALPHA_LATE = 0.10
+_DEFAULT_SEASON_PROGRESS = 0.5  # mid-season fallback
+
 # Categories where "lower is better" (rate stats where we want to minimize)
 _LOWER_BETTER: set[str] = {"whip"}
 
@@ -162,12 +174,24 @@ def score_free_agent(
     """Score a single free agent by expected matchup impact.
 
     Returns dict with:
-        player_id, overall_score, fit_score, category_scores, recommended_drop_id
+        player_id, talent_score, fit_score, weighted_score, overall_score,
+        category_scores, recommended_drop_id
 
-    ``overall_score`` is the sum of weighted z-scores across all categories.
-    ``fit_score`` is the sum of contributions from flippable/toss-up categories
-    only — this is the matchup-aware "how much does this player help me win
-    the close categories" metric.
+    ``talent_score`` — sum of *unweighted* z-scores across applicable
+    categories. Matchup-blind. Answers "how much above replacement is this
+    player overall, regardless of what I need this week?"
+
+    ``fit_score`` — sum of weighted z-scores restricted to flippable /
+    toss-up categories. Matchup-aware. Answers "how much does this player
+    help me win the categories that are actually contested?"
+
+    ``weighted_score`` — sum of weighted z-scores across all categories
+    (the legacy single-number score).
+
+    ``overall_score`` — final blended score, set by ``rank_free_agents``
+    after computing α from season progress: ``α × talent + (1−α) × fit``.
+    For single-player calls (no cohort context), defaults to ``weighted_score``
+    so legacy callers see no change.
     """
     player_id = str(player_row.get("player_id", ""))
 
@@ -186,7 +210,8 @@ def score_free_agent(
         sigmas = _compute_category_sigmas(my_roster_df, list(config.scoring_categories))
 
     category_scores: dict[str, float] = {}
-    overall_score = 0.0
+    weighted_score = 0.0
+    talent_score = 0.0
     fit_score = 0.0
 
     # Pitcher/hitter awareness: don't penalize hitters for having 0 WHIP or
@@ -227,14 +252,19 @@ def score_free_agent(
         z = delta / sigma
         weighted = z * weight
         category_scores[cat] = weighted
-        overall_score += weighted
+        weighted_score += weighted
+        talent_score += z
 
         if status in ("flippable_win", "flippable_loss", "toss_up"):
             fit_score += weighted
 
     return {
         "player_id": player_id,
-        "overall_score": overall_score,
+        # Legacy callers expect overall_score to behave like the old weighted
+        # sum; rank_free_agents will overwrite this with the α-blended score.
+        "overall_score": weighted_score,
+        "weighted_score": weighted_score,
+        "talent_score": talent_score,
         "fit_score": fit_score,
         "category_scores": category_scores,
         "recommended_drop_id": recommended_drop_id,
@@ -329,21 +359,48 @@ def find_recommended_drop(
     return ""
 
 
+def alpha_from_season_progress(progress: float) -> float:
+    """Map season progress (0.0 - 1.0) to the talent/fit blend weight α.
+
+    α decays linearly from ``_ALPHA_EARLY`` (start of season) to
+    ``_ALPHA_LATE`` (end of season). Out-of-range inputs are clamped.
+    """
+    progress = max(0.0, min(1.0, float(progress)))
+    return _ALPHA_EARLY - (_ALPHA_EARLY - _ALPHA_LATE) * progress
+
+
 def rank_free_agents(
     free_agents_df: pd.DataFrame,
     my_roster_df: pd.DataFrame,
     matchup_df: pd.DataFrame,
     callups_df: pd.DataFrame,
     config: LeagueSettings,
+    season_progress: float = _DEFAULT_SEASON_PROGRESS,
 ) -> pd.DataFrame:
     """Rank all available free agents by expected matchup impact.
 
-    Returns a DataFrame sorted descending by ``overall_score`` with columns:
-      player_id, player_name, team, position, is_pitcher,
-      overall_score, fit_score, category_scores (JSON string),
-      recommended_drop_id, is_callup, days_since_callup,
-      plus per-game stat columns for UI display (h, hr, sb, bb, avg, ops,
-      w, k, whip, k_bb, sv_h) carried over from free_agents_df.
+    The final ``overall_score`` is the α-blend of each FA's matchup-blind
+    *talent_score* and matchup-aware *fit_score*. α decays through the
+    season (early: trust talent more because category statuses are noisy;
+    late: trust fit more because every move matters for standings).
+
+    Args:
+        free_agents_df: All available free agents (Yahoo FA query output).
+        my_roster_df: User's current roster with per-game rates.
+        matchup_df: Output of ``score_categories`` (one row per cat).
+        callups_df: Recent MLB call-ups (for the call-up flag/days).
+        config: League settings.
+        season_progress: 0.0 = opening day, 1.0 = end of regular season.
+            Drives α via ``alpha_from_season_progress``. Defaults to 0.5
+            (mid-season) when callers don't supply it.
+
+    Returns:
+        DataFrame sorted descending by ``overall_score`` with columns:
+        player_id, player_name, team, position, is_pitcher,
+        overall_score, talent_score, fit_score, weighted_score,
+        category_scores (JSON), recommended_drop_id, is_callup,
+        days_since_callup, plus per-game stat columns (h, hr, sb, bb, avg,
+        ops, w, k, whip, k_bb, sv_h).
     """
     if free_agents_df.empty:
         return pd.DataFrame()
@@ -381,7 +438,10 @@ def rank_free_agents(
             "team": str(player_row.get("team", "")),
             "position": _positions_str(raw_positions),
             "is_pitcher": _is_pitcher(raw_positions),
-            "overall_score": scored["overall_score"],
+            # overall_score is filled in below after the α-blend.
+            "overall_score": scored["weighted_score"],
+            "weighted_score": scored["weighted_score"],
+            "talent_score": scored["talent_score"],
             "fit_score": scored["fit_score"],
             "category_scores": json.dumps(scored["category_scores"]),
             "recommended_drop_id": scored["recommended_drop_id"],
@@ -397,8 +457,13 @@ def rank_free_agents(
         records.append(rec)
 
     result = pd.DataFrame(records)
-    if not result.empty:
-        result = result.sort_values("overall_score", ascending=False).reset_index(
-            drop=True
-        )
+    if result.empty:
+        return result
+
+    # ── α-blend talent and fit into the final overall_score ───────────────
+    alpha = alpha_from_season_progress(season_progress)
+    result["overall_score"] = (
+        alpha * result["talent_score"] + (1.0 - alpha) * result["fit_score"]
+    )
+    result = result.sort_values("overall_score", ascending=False).reset_index(drop=True)
     return result

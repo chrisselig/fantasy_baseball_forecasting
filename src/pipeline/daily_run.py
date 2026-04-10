@@ -592,8 +592,15 @@ def _step_run_analysis(
     my_roster_enriched = _enrich_with_rates(my_roster_df, rates_df)
 
     callups_df = _query_callups(conn)
+    # Yahoo H2H league ≈ 24 fantasy weeks; week / 24 gives season progress.
+    season_progress = max(0.0, min(1.0, (week - 1) / 24.0))
     ranked_fa_df = rank_free_agents(
-        fa_enriched, my_roster_enriched, matchup_df, callups_df, settings
+        fa_enriched,
+        my_roster_enriched,
+        matchup_df,
+        callups_df,
+        settings,
+        season_progress=season_progress,
     )
 
     # Write real waiver scores back (overwrite placeholder 0-scores)
