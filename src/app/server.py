@@ -222,7 +222,7 @@ def _fmt_adv(value: Any, digits: int = 3) -> str:
 
 _TIER_COLORS: dict[str, str] = {
     "elite": "#1b5e20",  # dark green
-    "great": "#2e7d32",  # green
+    "great": "#1565c0",  # blue
     "average": "#b8860b",  # amber
     "poor": "#c62828",  # red
 }
