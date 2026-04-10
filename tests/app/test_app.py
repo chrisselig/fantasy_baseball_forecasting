@@ -191,6 +191,21 @@ def test_html_table_returns_tag() -> None:
     assert "r1c1" in html_str
 
 
+def test_html_table_renders_group_headers() -> None:
+    from src.app.server import _html_table
+
+    table = _html_table(
+        ["A", "B", "C", "D"],
+        [["1", "2", "3", "4"]],
+        group_headers=[("", 1), ("Weekly", 2), ("Seasonal", 1)],
+    )
+    html = str(table)
+    assert "Weekly" in html
+    assert "Seasonal" in html
+    assert 'colspan="2"' in html
+    assert 'colspan="1"' in html
+
+
 # ─── _fmt_stat: per-game rate formatting ──────────────────────────────────
 
 
@@ -271,3 +286,106 @@ def test_filter_inactive_empty_df_returns_empty() -> None:
 
     out = _filter_inactive_waiver_rows(pd.DataFrame())
     assert out.empty
+
+
+# ─── _tier_for / _color_tier / roster legend ──────────────────────────────
+
+
+def test_tier_for_hitter_rate_4_tiers() -> None:
+    from src.app.server import _tier_for
+
+    # AVG thresholds: elite .300+ / great .270 / avg .240 / poor <.240
+    assert _tier_for("avg", 0.310) == "elite"
+    assert _tier_for("avg", 0.280) == "great"
+    assert _tier_for("avg", 0.250) == "average"
+    assert _tier_for("avg", 0.230) == "poor"
+
+
+def test_tier_for_hitter_counting_3_tier_has_no_elite() -> None:
+    from src.app.server import _tier_for
+
+    # HR thresholds: great 2+ / avg 1 / poor 0 — no elite cutoff.
+    assert _tier_for("hr", 5) == "great"
+    assert _tier_for("hr", 2) == "great"
+    assert _tier_for("hr", 1) == "average"
+    assert _tier_for("hr", 0) == "poor"
+
+
+def test_tier_for_pitcher_lower_better() -> None:
+    from src.app.server import _tier_for
+
+    # WHIP thresholds: elite <1.00 / great <=1.20 / avg <=1.35 / poor >1.35
+    assert _tier_for("whip", 0.95) == "elite"
+    assert _tier_for("whip", 1.20) == "great"
+    assert _tier_for("whip", 1.30) == "average"
+    assert _tier_for("whip", 1.40) == "poor"
+    # xwOBA-A: elite <.290
+    assert _tier_for("xwoba_against", 0.280) == "elite"
+    assert _tier_for("xwoba_against", 0.340) == "poor"
+
+
+def test_tier_for_launch_angle_range_stat() -> None:
+    from src.app.server import _tier_for
+
+    assert _tier_for("avg_launch_angle", 18.0) == "great"  # power zone
+    assert _tier_for("avg_launch_angle", 10.0) == "average"  # line drive low
+    assert _tier_for("avg_launch_angle", 28.0) == "average"  # line drive high
+    assert _tier_for("avg_launch_angle", 4.0) == "poor"  # grounder
+    assert _tier_for("avg_launch_angle", 40.0) == "poor"  # pop-up
+
+
+def test_tier_for_none_and_nan_and_unknown() -> None:
+    from src.app.server import _tier_for
+
+    assert _tier_for("hr", None) is None
+    assert _tier_for("hr", float("nan")) is None
+    assert _tier_for("slot", 0.5) is None  # unknown stat key
+
+
+def test_color_tier_returns_span_with_color() -> None:
+    from htmltools import Tag
+
+    from src.app.server import _TIER_COLORS, _color_tier
+
+    result = _color_tier("0.310", "elite")
+    assert isinstance(result, Tag)
+    html = str(result)
+    assert _TIER_COLORS["elite"] in html
+    assert "0.310" in html
+
+
+def test_color_tier_passes_through_dash_and_none() -> None:
+    from src.app.server import _color_tier
+
+    assert _color_tier("—", "elite") == "—"
+    assert _color_tier("0.310", None) == "0.310"
+
+
+def test_fmt_stat_tier_colors_elite_avg() -> None:
+    from htmltools import Tag
+
+    from src.app.server import _TIER_COLORS, _fmt_stat_tier
+
+    # .310 AVG → elite, green
+    result = _fmt_stat_tier(0.310, "avg")
+    assert isinstance(result, Tag)
+    assert _TIER_COLORS["elite"] in str(result)
+
+
+def test_fmt_adv_tier_handles_nan() -> None:
+    from src.app.server import _fmt_adv_tier
+
+    # NaN value → plain dash, not a coloured span.
+    assert _fmt_adv_tier(float("nan"), "barrel_pct", 1) == "—"
+
+
+def test_roster_tier_legend_contains_all_four_tiers() -> None:
+    from src.app.server import _TIER_COLORS, _roster_tier_legend
+
+    html = str(_roster_tier_legend())
+    assert "Elite" in html
+    assert "Great" in html
+    assert "Average" in html
+    assert "Poor" in html
+    for color in _TIER_COLORS.values():
+        assert color in html
