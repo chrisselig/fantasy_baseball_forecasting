@@ -722,7 +722,10 @@ def _load_roster() -> pd.DataFrame:
             if not df.empty:
                 daily_df = _load_recent_daily_stats()
                 if not daily_df.empty and "player_id" in df.columns:
-                    df = annotate_with_streaks(df, daily_df)
+                    adv_df, _, _ = _load_advanced_with_league_avgs()
+                    df = annotate_with_streaks(
+                        df, daily_df, advanced_df=adv_df if not adv_df.empty else None
+                    )
                 elif "streak" not in df.columns:
                     df["streak"] = "—"
                 return df
@@ -760,7 +763,10 @@ def _waiver_df_from_report(report: dict[str, Any]) -> pd.DataFrame:
     try:
         daily_df = _load_recent_daily_stats()
         if not daily_df.empty:
-            df = annotate_with_streaks(df, daily_df)
+            adv_df, _, _ = _load_advanced_with_league_avgs()
+            df = annotate_with_streaks(
+                df, daily_df, advanced_df=adv_df if not adv_df.empty else None
+            )
         else:
             df["streak"] = "—"
     except Exception as exc:
