@@ -327,8 +327,11 @@ app_ui = ui.page_navbar(
         ),
         ui.layout_columns(
             _card("Hitters", ui.output_ui("hitter_roster_ui")),
+            col_widths=[12],
+        ),
+        ui.layout_columns(
             _card("Pitchers", ui.output_ui("pitcher_roster_ui")),
-            col_widths=[7, 5],
+            col_widths=[12],
         ),
     ),
     # ── Tab 5: Transactions ───────────────────────────────────────────────
