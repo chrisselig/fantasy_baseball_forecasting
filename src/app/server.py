@@ -817,20 +817,40 @@ def _load_projections() -> pd.DataFrame:
 def _load_news(days: int = 3) -> pd.DataFrame:
     """Load recent player news from MotherDuck.
 
+    News for players on my team is flagged via ``is_mine`` and sorted to
+    the top so the most relevant headlines surface first.
+
     Args:
         days: Number of days back to load news for.
     """
+    team_key = _get_my_team_key()
     try:
         with managed_connection() as conn:
-            df: pd.DataFrame = conn.execute(f"""
+            df: pd.DataFrame = conn.execute(
+                f"""
+                WITH my_latest AS (
+                    SELECT MAX(snapshot_date) AS snap
+                    FROM {FACT_ROSTERS}
+                    WHERE team_id = ?
+                ),
+                my_players AS (
+                    SELECT DISTINCT player_id
+                    FROM {FACT_ROSTERS}
+                    WHERE team_id = ?
+                      AND snapshot_date = (SELECT snap FROM my_latest)
+                )
                 SELECT
-                    id, player_id, player_name, headline, url,
-                    source, published_at, sentiment_label, sentiment_score
-                FROM {FACT_PLAYER_NEWS}
-                WHERE fetched_at >= NOW() - INTERVAL '{days} days'
-                ORDER BY published_at DESC
+                    n.id, n.player_id, n.player_name, n.headline, n.url,
+                    n.source, n.published_at, n.sentiment_label, n.sentiment_score,
+                    (mp.player_id IS NOT NULL) AS is_mine
+                FROM {FACT_PLAYER_NEWS} n
+                LEFT JOIN my_players mp ON mp.player_id = n.player_id
+                WHERE n.fetched_at >= NOW() - INTERVAL '{days} days'
+                ORDER BY is_mine DESC, n.published_at DESC
                 LIMIT 200
-            """).fetchdf()
+                """,
+                [team_key, team_key],
+            ).fetchdf()
             if not df.empty:
                 return df
     except (duckdb.Error, Exception) as exc:
@@ -2475,8 +2495,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             "Informative": ("#1a7fa1", "ℹ️ Informative"),
         }
 
-        cards: list[Any] = []
-        for _, row in df.iterrows():
+        def _render_card(row: pd.Series) -> Tag:
             label = str(row.get("sentiment_label", "Informative"))
             color, badge_text = _sentiment_style.get(label, ("#8096b0", label))
             player = str(row.get("player_name", ""))
@@ -2502,35 +2521,61 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 )
             )
 
-            cards.append(
+            return ui.div(
                 ui.div(
-                    ui.div(
-                        ui.tags.span(
-                            badge_text,
-                            style=f"background:{color};color:#fff;padding:2px 8px;"
-                            "border-radius:10px;font-size:0.72rem;font-weight:700;"
-                            "margin-right:0.5rem;",
-                        ),
-                        ui.tags.span(
-                            player,
-                            style="font-size:0.78rem;font-weight:700;color:#1a7fa1;"
-                            "margin-right:0.5rem;",
-                        ),
-                        ui.tags.span(
-                            f"{source}  ·  {pub_str}" if source else pub_str,
-                            style="font-size:0.73rem;color:#8096b0;",
-                        ),
-                        style="margin-bottom:4px;",
+                    ui.tags.span(
+                        badge_text,
+                        style=f"background:{color};color:#fff;padding:2px 8px;"
+                        "border-radius:10px;font-size:0.72rem;font-weight:700;"
+                        "margin-right:0.5rem;",
                     ),
-                    headline_el,
-                    style="padding:0.55rem 0.85rem;border-top:1px solid #edf1f7;"
-                    "background:#fff;",
-                )
+                    ui.tags.span(
+                        player,
+                        style="font-size:0.78rem;font-weight:700;color:#1a7fa1;"
+                        "margin-right:0.5rem;",
+                    ),
+                    ui.tags.span(
+                        f"{source}  ·  {pub_str}" if source else pub_str,
+                        style="font-size:0.73rem;color:#8096b0;",
+                    ),
+                    style="margin-bottom:4px;",
+                ),
+                headline_el,
+                style="padding:0.55rem 0.85rem;border-top:1px solid #edf1f7;"
+                "background:#fff;",
             )
 
-        return ui.div(
-            *cards,
-            style="border:1px solid #d8e1eb;border-radius:6px;overflow:hidden;",
+        def _render_column(title: str, column_df: pd.DataFrame) -> Tag:
+            header = ui.div(
+                title,
+                style="padding:0.5rem 0.85rem;background:#132747;color:#fff;"
+                "font-weight:700;font-size:0.82rem;letter-spacing:0.02em;",
+            )
+            if column_df.empty:
+                body: Any = ui.div(
+                    "No news.",
+                    style="padding:0.75rem 0.85rem;color:#8096b0;"
+                    "font-size:0.82rem;background:#fff;",
+                )
+            else:
+                body = [_render_card(r) for _, r in column_df.iterrows()]
+            return ui.div(
+                header,
+                *(body if isinstance(body, list) else [body]),
+                style="border:1px solid #d8e1eb;border-radius:6px;overflow:hidden;",
+            )
+
+        if "is_mine" in df.columns:
+            mine_df = df[df["is_mine"].astype(bool)]
+            other_df = df[~df["is_mine"].astype(bool)]
+        else:
+            mine_df = df.iloc[0:0]
+            other_df = df
+
+        return ui.layout_columns(
+            _render_column("⭐ My Team", mine_df),
+            _render_column("League", other_df),
+            col_widths=[6, 6],
         )
 
     # ── Manual refresh ────────────────────────────────────────────────────
