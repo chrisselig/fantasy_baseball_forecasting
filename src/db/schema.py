@@ -43,6 +43,7 @@ FACT_PROJECTIONS = "fact_projections"
 FACT_DAILY_REPORTS = "fact_daily_reports"
 FACT_PIPELINE_RUNS = "fact_pipeline_runs"
 FACT_PLAYER_NEWS = "fact_player_news"
+FACT_PLAYER_ADVANCED_STATS = "fact_player_advanced_stats"
 
 ALL_TABLES = [
     DIM_PLAYERS,
@@ -57,6 +58,7 @@ ALL_TABLES = [
     FACT_DAILY_REPORTS,
     FACT_PIPELINE_RUNS,
     FACT_PLAYER_NEWS,
+    FACT_PLAYER_ADVANCED_STATS,
 ]
 
 # ── DDL statements ────────────────────────────────────────────────────────────
@@ -292,6 +294,31 @@ CREATE TABLE IF NOT EXISTS {FACT_PLAYER_NEWS} (
 );
 """
 
+_DDL_FACT_PLAYER_ADVANCED_STATS = f"""
+CREATE TABLE IF NOT EXISTS {FACT_PLAYER_ADVANCED_STATS} (
+    player_id             VARCHAR NOT NULL,
+    season                INTEGER NOT NULL,
+    -- ── Batter advanced (Baseball Savant) ─────────────────────────────────
+    xwoba                 DECIMAL(5, 3),   -- expected wOBA (Savant)
+    woba                  DECIMAL(5, 3),   -- computed from raw daily stats
+    barrel_pct            DECIMAL(5, 2),   -- barrels / BBE × 100
+    hard_hit_pct          DECIMAL(5, 2),   -- EV ≥ 95 mph rate × 100
+    avg_launch_angle      DECIMAL(5, 2),   -- degrees
+    sweet_spot_pct        DECIMAL(5, 2),   -- 8-32 deg LA rate × 100
+    bat_speed_pctile      DECIMAL(5, 2),   -- Savant percentile 0-100
+    sprint_speed_pctile   DECIMAL(5, 2),   -- Savant percentile 0-100
+    -- ── Pitcher advanced (Baseball Savant + computed) ─────────────────────
+    xera                  DECIMAL(5, 2),   -- Savant xERA
+    xwoba_against         DECIMAL(5, 3),   -- expected wOBA against
+    k_bb_pct              DECIMAL(5, 2),   -- (K - BB) / BF × 100 (computed)
+    barrel_pct_against    DECIMAL(5, 2),
+    hard_hit_pct_against  DECIMAL(5, 2),
+    -- ── Metadata ──────────────────────────────────────────────────────────
+    updated_at            TIMESTAMP NOT NULL,
+    PRIMARY KEY (player_id, season)
+);
+"""
+
 # Creation order matters — dimensions before facts that reference them
 _DDL_IN_ORDER = [
     _DDL_DIM_PLAYERS,
@@ -306,6 +333,7 @@ _DDL_IN_ORDER = [
     _DDL_FACT_PIPELINE_RUNS,  # must exist before fact_daily_reports references it
     _DDL_FACT_DAILY_REPORTS,
     _DDL_FACT_PLAYER_NEWS,
+    _DDL_FACT_PLAYER_ADVANCED_STATS,
 ]
 
 

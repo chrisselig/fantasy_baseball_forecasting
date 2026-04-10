@@ -14,6 +14,7 @@ from src.db.schema import (
     FACT_DAILY_REPORTS,
     FACT_MATCHUPS,
     FACT_PIPELINE_RUNS,
+    FACT_PLAYER_ADVANCED_STATS,
     FACT_PLAYER_NEWS,
     FACT_PLAYER_STATS_DAILY,
     FACT_PLAYER_STATS_WEEKLY,
@@ -36,8 +37,8 @@ def mem_conn() -> Generator[duckdb.DuckDBPyConnection, None, None]:
 
 
 class TestTableConstants:
-    def test_all_tables_has_twelve_entries(self) -> None:
-        assert len(ALL_TABLES) == 12
+    def test_all_tables_has_thirteen_entries(self) -> None:
+        assert len(ALL_TABLES) == 13
 
     def test_all_expected_tables_present(self) -> None:
         expected = {
@@ -53,6 +54,7 @@ class TestTableConstants:
             FACT_DAILY_REPORTS,
             FACT_PIPELINE_RUNS,
             FACT_PLAYER_NEWS,
+            FACT_PLAYER_ADVANCED_STATS,
         }
         assert set(ALL_TABLES) == expected
 

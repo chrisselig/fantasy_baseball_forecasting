@@ -26,6 +26,8 @@ from src.api.mlb_client import (
     get_pitcher_stats,
     get_player_info,
     get_recent_callups,
+    get_savant_batter_advanced,
+    get_savant_pitcher_advanced,
     get_season_stats_for_projections,
     get_steamer_projections,
 )
@@ -976,3 +978,110 @@ def test_empty_df_has_correct_columns() -> None:
     df = _empty_df(cols)
     assert df.empty
     assert list(df.columns) == cols
+
+
+# ── Savant advanced stats ─────────────────────────────────────────────────────
+
+
+class TestGetSavantBatterAdvanced:
+    """Tests for get_savant_batter_advanced (pybaseball is mocked)."""
+
+    def test_merges_three_sources_on_player_id(self) -> None:
+        """xwOBA, barrels, and percentiles join on player_id into one frame."""
+        fake_expected = pd.DataFrame(
+            [{"player_id": 1, "est_woba": 0.380}, {"player_id": 2, "est_woba": 0.290}]
+        )
+        fake_barrels = pd.DataFrame(
+            [
+                {
+                    "player_id": 1,
+                    "brl_percent": 10.5,
+                    "ev95percent": 45.2,
+                    "avg_hit_angle": 12.3,
+                    "anglesweetspotpercent": 35.0,
+                }
+            ]
+        )
+        fake_pctile = pd.DataFrame(
+            [
+                {"player_id": 1, "bat_speed": 75.0, "sprint_speed": 50.0},
+                {"player_id": 2, "bat_speed": 40.0, "sprint_speed": 60.0},
+            ]
+        )
+        with (
+            patch("pybaseball.statcast_batter_expected_stats") as m1,
+            patch("pybaseball.statcast_batter_exitvelo_barrels") as m2,
+            patch("pybaseball.statcast_batter_percentile_ranks") as m3,
+        ):
+            m1.return_value = fake_expected
+            m2.return_value = fake_barrels
+            m3.return_value = fake_pctile
+            out = get_savant_batter_advanced(2024)
+
+        assert not out.empty
+        assert set(out["mlb_id"]) == {1, 2}
+        p1 = out[out["mlb_id"] == 1].iloc[0]
+        assert p1["xwoba"] == pytest.approx(0.380)
+        assert p1["barrel_pct"] == pytest.approx(10.5)
+        assert p1["hard_hit_pct"] == pytest.approx(45.2)
+        assert p1["bat_speed_pctile"] == pytest.approx(75.0)
+        # Player 2 has no barrel data — barrel_pct should be NaN
+        p2 = out[out["mlb_id"] == 2].iloc[0]
+        assert pd.isna(p2["barrel_pct"])
+        assert p2["bat_speed_pctile"] == pytest.approx(40.0)
+
+    def test_returns_empty_when_all_sources_fail(self) -> None:
+        """If every Savant call errors, return an empty frame with correct cols."""
+        with (
+            patch("pybaseball.statcast_batter_expected_stats") as m1,
+            patch("pybaseball.statcast_batter_exitvelo_barrels") as m2,
+            patch("pybaseball.statcast_batter_percentile_ranks") as m3,
+        ):
+            m1.side_effect = RuntimeError("down")
+            m2.side_effect = RuntimeError("down")
+            m3.side_effect = RuntimeError("down")
+            out = get_savant_batter_advanced(2024)
+        assert out.empty
+        assert "xwoba" in out.columns
+
+
+class TestGetSavantPitcherAdvanced:
+    def test_merges_expected_and_barrels(self) -> None:
+        fake_expected = pd.DataFrame(
+            [
+                {"player_id": 1, "xera": 3.50, "est_woba": 0.290},
+                {"player_id": 2, "xera": 4.20, "est_woba": 0.330},
+            ]
+        )
+        fake_barrels = pd.DataFrame(
+            [{"player_id": 1, "brl_percent": 6.5, "ev95percent": 32.0}]
+        )
+        with (
+            patch("pybaseball.statcast_pitcher_expected_stats") as m1,
+            patch("pybaseball.statcast_pitcher_exitvelo_barrels") as m2,
+        ):
+            m1.return_value = fake_expected
+            m2.return_value = fake_barrels
+            out = get_savant_pitcher_advanced(2024)
+
+        assert set(out["mlb_id"]) == {1, 2}
+        p1 = out[out["mlb_id"] == 1].iloc[0]
+        assert p1["xera"] == pytest.approx(3.50)
+        assert p1["xwoba_against"] == pytest.approx(0.290)
+        assert p1["barrel_pct_against"] == pytest.approx(6.5)
+
+    def test_returns_empty_when_barrels_fail(self) -> None:
+        """Barrels endpoint failure should not prevent xERA/xwOBA from returning."""
+        fake_expected = pd.DataFrame(
+            [{"player_id": 1, "xera": 3.50, "est_woba": 0.290}]
+        )
+        with (
+            patch("pybaseball.statcast_pitcher_expected_stats") as m1,
+            patch("pybaseball.statcast_pitcher_exitvelo_barrels") as m2,
+        ):
+            m1.return_value = fake_expected
+            m2.side_effect = RuntimeError("parse error")
+            out = get_savant_pitcher_advanced(2024)
+        assert len(out) == 1
+        assert out.iloc[0]["xera"] == pytest.approx(3.50)
+        assert pd.isna(out.iloc[0]["barrel_pct_against"])

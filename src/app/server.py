@@ -90,6 +90,19 @@ _STATUS_LABEL: dict[str, str] = {
 _PITCHER_SLOTS = frozenset({"SP", "SP1", "SP2", "RP", "RP1", "RP2", "P", "P1", "P2"})
 
 
+def _fmt_adv(value: Any, digits: int = 3) -> str:
+    """Format an advanced-stat value with a decimal style, or '—' if NaN/None."""
+    try:
+        if value is None:
+            return "—"
+        f = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(f):
+        return "—"
+    return f"{f:.{digits}f}"
+
+
 def _roster_slot_order(slot: Any) -> int:
     """Sort key so active slots appear first, then BN, then IL/NA."""
     s = str(slot).strip().upper()
@@ -396,6 +409,17 @@ _EMPTY_ROSTER_COLS: list[str] = [
     "whip",
     "k_bb",
     "sv_h",
+    "xwoba",
+    "woba",
+    "barrel_pct",
+    "hard_hit_pct",
+    "avg_launch_angle",
+    "sweet_spot_pct",
+    "bat_speed_pctile",
+    "xera",
+    "xwoba_against",
+    "k_bb_pct",
+    "barrel_pct_against",
 ]
 
 
@@ -524,9 +548,22 @@ def _load_roster() -> pd.DataFrame:
                     COALESCE(s.k,  0)    AS k,
                     COALESCE(s.whip, 0.0) AS whip,
                     COALESCE(s.k_bb, 0.0) AS k_bb,
-                    COALESCE(s.sv_h, 0)  AS sv_h
+                    COALESCE(s.sv_h, 0)  AS sv_h,
+                    a.xwoba              AS xwoba,
+                    a.woba               AS woba,
+                    a.barrel_pct         AS barrel_pct,
+                    a.hard_hit_pct       AS hard_hit_pct,
+                    a.avg_launch_angle   AS avg_launch_angle,
+                    a.sweet_spot_pct     AS sweet_spot_pct,
+                    a.bat_speed_pctile   AS bat_speed_pctile,
+                    a.xera               AS xera,
+                    a.xwoba_against      AS xwoba_against,
+                    a.k_bb_pct           AS k_bb_pct,
+                    a.barrel_pct_against AS barrel_pct_against
                 FROM {FACT_ROSTERS} r
                 LEFT JOIN {DIM_PLAYERS} p ON r.player_id = p.player_id
+                LEFT JOIN fact_player_advanced_stats a
+                    ON r.player_id = a.player_id
                 LEFT JOIN (
                     SELECT
                         player_id,
@@ -2001,6 +2038,13 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             "BB",
             "AVG",
             "OPS",
+            "wOBA",
+            "xwOBA",
+            "Barrel%",
+            "HardHit%",
+            "LA",
+            "SwSp%",
+            "BatSp",
             "Streak",
         ]
         rows_out: list[list[Any]] = []
@@ -2016,6 +2060,13 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     _fmt_stat(r.get("bb"), "bb"),
                     _fmt_stat(r.get("avg"), "avg"),
                     _fmt_stat(r.get("ops"), "ops"),
+                    _fmt_adv(r.get("woba"), 3),
+                    _fmt_adv(r.get("xwoba"), 3),
+                    _fmt_adv(r.get("barrel_pct"), 1),
+                    _fmt_adv(r.get("hard_hit_pct"), 1),
+                    _fmt_adv(r.get("avg_launch_angle"), 1),
+                    _fmt_adv(r.get("sweet_spot_pct"), 1),
+                    _fmt_adv(r.get("bat_speed_pctile"), 0),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
@@ -2034,7 +2085,21 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         pitchers = pitchers.sort_values(
             by=["_slot_order", "slot", "player_name"], kind="stable"
         )
-        headers = ["Slot", "Player", "Pos", "W", "K", "WHIP", "K/BB", "SV+H", "Streak"]
+        headers = [
+            "Slot",
+            "Player",
+            "Pos",
+            "W",
+            "K",
+            "WHIP",
+            "K/BB",
+            "SV+H",
+            "xERA",
+            "xwOBA-A",
+            "K-BB%",
+            "Brl%-A",
+            "Streak",
+        ]
         rows_out: list[list[Any]] = []
         for _, r in pitchers.iterrows():
             whip_val = float(r.get("whip", 0.0))
@@ -2058,6 +2123,10 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     ),
                     _fmt_stat(r.get("k_bb", 0.0), "k_bb"),
                     _fmt_stat(r.get("sv_h", "—"), "sv_h"),
+                    _fmt_adv(r.get("xera"), 2),
+                    _fmt_adv(r.get("xwoba_against"), 3),
+                    _fmt_adv(r.get("k_bb_pct"), 1),
+                    _fmt_adv(r.get("barrel_pct_against"), 1),
                     _streak_badge(str(r.get("streak", "—"))),
                 ]
             )
