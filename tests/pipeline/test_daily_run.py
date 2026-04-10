@@ -881,6 +881,91 @@ def test_serialize_waiver_rankings_includes_games_played():
     assert out[0]["games_played"] == 7.0
 
 
+# ── _query_my_roster ───────────────────────────────────────────────────────────
+
+
+def _seed_roster_snapshot(
+    conn: duckdb.DuckDBPyConnection,
+    team_key: str,
+    snapshot_date: datetime.date,
+    player_ids: list[str],
+) -> None:
+    """Seed fact_rosters + dim_players for a single snapshot date."""
+    rows = [
+        {
+            "team_id": team_key,
+            "player_id": pid,
+            "snapshot_date": snapshot_date,
+            "roster_slot": "OF",
+            "acquisition_type": "draft",
+        }
+        for pid in player_ids
+    ]
+    rdf = pd.DataFrame(rows)
+    conn.register("_t_r", rdf)
+    conn.execute("INSERT INTO fact_rosters SELECT * FROM _t_r")
+    conn.unregister("_t_r")
+
+    now = datetime.datetime.now(datetime.UTC)
+    dp = pd.DataFrame(
+        [
+            {
+                "player_id": pid,
+                "mlb_id": None,
+                "fg_id": None,
+                "full_name": f"Player {pid}",
+                "team": "NYY",
+                "positions": ["OF"],
+                "bats": "R",
+                "throws": "R",
+                "status": "Active",
+                "updated_at": now,
+            }
+            for pid in player_ids
+        ]
+    )
+    conn.register("_t_dp", dp)
+    conn.execute("INSERT INTO dim_players SELECT * FROM _t_dp")
+    conn.unregister("_t_dp")
+
+
+def test_query_my_roster_exact_snapshot_date(conn: duckdb.DuckDBPyConnection) -> None:
+    from src.pipeline.daily_run import _query_my_roster
+
+    _seed_roster_snapshot(conn, "t1", datetime.date(2026, 4, 9), ["p1", "p2"])
+    df = _query_my_roster(conn, "t1", datetime.date(2026, 4, 9), week=3, season=2026)
+    assert len(df) == 2
+    assert set(df["player_id"]) == {"p1", "p2"}
+
+
+def test_query_my_roster_falls_back_to_closest_snapshot(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Historical backfill dates should reuse the closest available snapshot.
+
+    Without this fallback, backfilled reports for weeks 1/2 come out empty
+    because no roster snapshot was taken on those past dates.
+    """
+    from src.pipeline.daily_run import _query_my_roster
+
+    # Only one snapshot exists — 2026-04-09 (in week 3).
+    _seed_roster_snapshot(conn, "t1", datetime.date(2026, 4, 9), ["p1", "p2"])
+
+    # Querying for a date in week 1 should fall back to the 4/9 snapshot.
+    df = _query_my_roster(conn, "t1", datetime.date(2026, 3, 25), week=1, season=2026)
+    assert len(df) == 2
+    assert set(df["player_id"]) == {"p1", "p2"}
+
+
+def test_query_my_roster_empty_when_no_snapshots_exist(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    from src.pipeline.daily_run import _query_my_roster
+
+    df = _query_my_roster(conn, "t1", datetime.date(2026, 4, 9), week=3, season=2026)
+    assert df.empty
+
+
 # ── _step_load_player_news ─────────────────────────────────────────────────────
 
 

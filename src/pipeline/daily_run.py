@@ -822,10 +822,36 @@ def _query_my_roster(
 ) -> pd.DataFrame:
     """Query my current roster from fact_rosters + dim_players.
 
+    Uses the snapshot for ``today`` when available. For historical
+    backfills (dates before any snapshot existed), falls back to the
+    closest available snapshot_date for this team so the analysis still
+    produces a report. Without the fallback, backfilled reports for
+    dates predating the first daily run come out empty because the
+    ``snapshot_date = today`` filter matches nothing.
+
     Returns DataFrame with columns needed by the analysis functions:
     player_id, slot, eligible_positions, full_name, team, accumulated_ip.
     """
     try:
+        snap_row = conn.execute(
+            f"""
+            SELECT snapshot_date
+            FROM {FACT_ROSTERS}
+            WHERE team_id = ?
+            ORDER BY ABS(date_diff('day', snapshot_date, CAST(? AS DATE)))
+            LIMIT 1
+        """,
+            [team_key, today],
+        ).fetchone()
+        snap_date = snap_row[0] if snap_row else today
+        if snap_date != today:
+            logger.info(
+                "Roster snapshot for %s not found on %s; falling back to %s",
+                team_key,
+                today,
+                snap_date,
+            )
+
         df: pd.DataFrame = conn.execute(
             f"""
             SELECT
@@ -843,7 +869,7 @@ def _query_my_roster(
             WHERE r.team_id = ?
               AND r.snapshot_date = ?
         """,
-            [today, team_key, today],
+            [today, team_key, snap_date],
         ).fetchdf()
     except duckdb.Error as exc:
         logger.warning("Roster query failed for %s: %s", team_key, exc)
