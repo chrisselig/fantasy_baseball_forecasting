@@ -25,6 +25,7 @@ from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
     FACT_MATCHUPS,
+    FACT_PLAYER_ADVANCED_STATS,
     FACT_PLAYER_NEWS,
     FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
@@ -769,6 +770,117 @@ def _waiver_df_from_report(report: dict[str, Any]) -> pd.DataFrame:
     return df
 
 
+# Advanced-stat columns by player type — keys must match
+# fact_player_advanced_stats column names.
+_HITTER_ADV_COLS: tuple[str, ...] = (
+    "xwoba",
+    "woba",
+    "barrel_pct",
+    "hard_hit_pct",
+    "avg_launch_angle",
+    "sweet_spot_pct",
+    "bat_speed_pctile",
+)
+_PITCHER_ADV_COLS: tuple[str, ...] = (
+    "xera",
+    "xwoba_against",
+    "k_bb_pct",
+    "barrel_pct_against",
+)
+# Stats where lower is better — coloring is inverted.
+_ADV_LOWER_BETTER: frozenset[str] = frozenset(
+    {"xera", "xwoba_against", "barrel_pct_against"}
+)
+
+
+def _load_advanced_with_league_avgs() -> tuple[
+    pd.DataFrame, dict[str, float], dict[str, float]
+]:
+    """Load fact_player_advanced_stats and per-cohort league averages.
+
+    Splits hitters from pitchers by which stat is populated (xwoba marks a
+    hitter, xera a pitcher) and returns the means of each cohort. Empty
+    DataFrames and empty dicts are returned when nothing is loaded so the
+    caller can fall back gracefully.
+    """
+    try:
+        with managed_connection() as conn:
+            adv: pd.DataFrame = conn.execute(
+                f"""
+                SELECT
+                    player_id,
+                    xwoba, woba, barrel_pct, hard_hit_pct,
+                    avg_launch_angle, sweet_spot_pct, bat_speed_pctile,
+                    xera, xwoba_against, k_bb_pct, barrel_pct_against
+                FROM {FACT_PLAYER_ADVANCED_STATS}
+                WHERE season = (
+                    SELECT MAX(season) FROM {FACT_PLAYER_ADVANCED_STATS}
+                )
+                """
+            ).fetchdf()
+    except (duckdb.Error, Exception) as exc:
+        logger.warning("Could not load advanced stats: %s", exc)
+        return pd.DataFrame(), {}, {}
+
+    if adv.empty:
+        return adv, {}, {}
+
+    hitter_mask = adv["xwoba"].notna()
+    pitcher_mask = adv["xera"].notna()
+    hitter_means: dict[str, float] = {}
+    pitcher_means: dict[str, float] = {}
+    if hitter_mask.any():
+        hitter_means = {
+            c: float(adv.loc[hitter_mask, c].mean(skipna=True))
+            for c in _HITTER_ADV_COLS
+            if c in adv.columns
+        }
+    if pitcher_mask.any():
+        pitcher_means = {
+            c: float(adv.loc[pitcher_mask, c].mean(skipna=True))
+            for c in _PITCHER_ADV_COLS
+            if c in adv.columns
+        }
+    return adv, hitter_means, pitcher_means
+
+
+def _color_adv(
+    value: Any,
+    avg: float | None,
+    *,
+    lower_better: bool = False,
+    digits: int = 3,
+    neutral_pct: float = 0.05,
+) -> Any:
+    """Render an advanced-stat value coloured by its delta from league average.
+
+    - Green when the player is at least ``neutral_pct`` better than league.
+    - Yellow within the neutral band.
+    - Red when at least ``neutral_pct`` worse.
+    Falls back to '—' for missing values or missing averages.
+    """
+    if value is None or avg is None or (isinstance(avg, float) and pd.isna(avg)):
+        return _fmt_adv(value, digits)
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(v):
+        return "—"
+    if not avg or not pd.notna(avg):
+        return _fmt_adv(v, digits)
+    delta = (v - float(avg)) / float(avg)
+    if lower_better:
+        delta = -delta
+    if delta > neutral_pct:
+        color = "#2e7d32"  # green — better
+    elif delta < -neutral_pct:
+        color = "#c62828"  # red — worse
+    else:
+        color = "#b8860b"  # amber — about average
+    return ui.tags.span(f"{v:.{digits}f}", style=f"color:{color};font-weight:600;")
+
+
 def _load_transactions() -> pd.DataFrame:
     """Load recent MLB transactions from MotherDuck."""
     try:
@@ -953,6 +1065,13 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         elif streak_filter == "❄️ Cold":
             df = df[df["streak"] == "❄️ Cold"]
         return df.reset_index(drop=True)
+
+    @reactive.calc
+    def advanced_stats_bundle() -> tuple[
+        pd.DataFrame, dict[str, float], dict[str, float]
+    ]:
+        _refresh_counter()
+        return _load_advanced_with_league_avgs()
 
     @reactive.calc
     def projection_data() -> pd.DataFrame:
@@ -2089,36 +2208,27 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         df = waiver_data()
         if df.empty:
             return ui.p("No waiver wire data.", style="color:#888;padding:0.5rem;")
-        headers = [
-            "#",
-            "Player",
-            "Team",
-            "Pos",
-            "Score",
-            "Fit",
-            "Streak",
-            "Key Stats",
-        ]
-        rows_out: list[list[Any]] = []
-        for _, r in df.iterrows():
-            pos = str(r.get("position", ""))
-            is_p = bool(r.get("is_pitcher", False)) or any(
+
+        adv_df, hit_avgs, pit_avgs = advanced_stats_bundle()
+        if not adv_df.empty:
+            df = df.merge(
+                adv_df,
+                on="player_id",
+                how="left",
+                suffixes=("", "_adv"),
+            )
+
+        def _is_p(row: pd.Series) -> bool:
+            pos = str(row.get("position", ""))
+            return bool(row.get("is_pitcher", False)) or any(
                 p in pos.upper() for p in ("SP", "RP")
             )
-            if is_p:
-                key_stats = (
-                    f"K:{_fmt_stat(r.get('k'), 'k')} "
-                    f"W:{_fmt_stat(r.get('w'), 'w')} "
-                    f"WHIP:{_fmt_stat(r.get('whip'), 'whip')} "
-                    f"SV+H:{_fmt_stat(r.get('sv_h'), 'sv_h')}"
-                )
-            else:
-                key_stats = (
-                    f"AVG:{_fmt_stat(r.get('avg'), 'avg')} "
-                    f"OPS:{_fmt_stat(r.get('ops'), 'ops')} "
-                    f"HR:{_fmt_stat(r.get('hr'), 'hr')} "
-                    f"SB:{_fmt_stat(r.get('sb'), 'sb')}"
-                )
+
+        type_mask = df.apply(_is_p, axis=1)
+        hitters_df = df[~type_mask].copy()
+        pitchers_df = df[type_mask].copy()
+
+        def _common_cells(r: pd.Series) -> list[Any]:
             callup_badge = (
                 ui.tags.span(
                     " ⬆",
@@ -2133,25 +2243,152 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             fit_color = (
                 "#2e7d32" if fit_val >= 2.0 else "#e65100" if fit_val >= 0.5 else "#888"
             )
-            rows_out.append(
+            return [
+                str(int(r.get("rank", 0))),
+                ui.tags.span(str(r.get("player_name", "")), callup_badge),
+                str(r.get("team", "")),
+                str(r.get("position", "")),
+                ui.tags.span(
+                    f"{score_val:.1f}",
+                    style="font-weight:700;color:#132747;",
+                ),
+                ui.tags.span(
+                    f"{fit_val:+.1f}",
+                    style=f"font-weight:700;color:{fit_color};",
+                ),
+                _streak_badge(str(r.get("streak", "—"))),
+            ]
+
+        hitter_header_labels = [
+            "#",
+            "Player",
+            "Team",
+            "Pos",
+            "Score",
+            "Fit",
+            "Streak",
+            "AVG",
+            "OPS",
+            "HR",
+            "SB",
+            "wOBA",
+            "xwOBA",
+            "Barrel%",
+            "HardHit%",
+            "LA",
+            "SwSp%",
+            "BatSp",
+        ]
+        hitter_headers: list[Any] = [
+            _th_tip(label, _ROSTER_TOOLTIPS.get(label, ""))
+            for label in hitter_header_labels
+        ]
+        hitter_rows: list[list[Any]] = []
+        for _, r in hitters_df.iterrows():
+            row_cells = _common_cells(r)
+            row_cells.extend(
                 [
-                    str(int(r.get("rank", 0))),
-                    ui.tags.span(str(r.get("player_name", "")), callup_badge),
-                    str(r.get("team", "")),
-                    pos,
-                    ui.tags.span(
-                        f"{score_val:.1f}",
-                        style="font-weight:700;color:#132747;",
+                    _fmt_stat(r.get("avg"), "avg"),
+                    _fmt_stat(r.get("ops"), "ops"),
+                    _fmt_stat(r.get("hr"), "hr"),
+                    _fmt_stat(r.get("sb"), "sb"),
+                    _color_adv(r.get("woba"), hit_avgs.get("woba"), digits=3),
+                    _color_adv(r.get("xwoba"), hit_avgs.get("xwoba"), digits=3),
+                    _color_adv(
+                        r.get("barrel_pct"), hit_avgs.get("barrel_pct"), digits=1
                     ),
-                    ui.tags.span(
-                        f"{fit_val:+.1f}",
-                        style=f"font-weight:700;color:{fit_color};",
+                    _color_adv(
+                        r.get("hard_hit_pct"),
+                        hit_avgs.get("hard_hit_pct"),
+                        digits=1,
                     ),
-                    _streak_badge(str(r.get("streak", "—"))),
-                    ui.tags.span(key_stats, style="font-size:0.73rem;color:#4a6282;"),
+                    _color_adv(
+                        r.get("avg_launch_angle"),
+                        hit_avgs.get("avg_launch_angle"),
+                        digits=1,
+                    ),
+                    _color_adv(
+                        r.get("sweet_spot_pct"),
+                        hit_avgs.get("sweet_spot_pct"),
+                        digits=1,
+                    ),
+                    _color_adv(
+                        r.get("bat_speed_pctile"),
+                        hit_avgs.get("bat_speed_pctile"),
+                        digits=0,
+                    ),
                 ]
             )
-        return _html_table(headers, rows_out)
+            hitter_rows.append(row_cells)
+
+        pitcher_header_labels = [
+            "#",
+            "Player",
+            "Team",
+            "Pos",
+            "Score",
+            "Fit",
+            "Streak",
+            "K",
+            "W",
+            "WHIP",
+            "SV+H",
+            "xERA",
+            "xwOBA-A",
+            "K-BB%",
+            "Brl%-A",
+        ]
+        pitcher_headers: list[Any] = [
+            _th_tip(label, _ROSTER_TOOLTIPS.get(label, ""))
+            for label in pitcher_header_labels
+        ]
+        pitcher_rows: list[list[Any]] = []
+        for _, r in pitchers_df.iterrows():
+            row_cells = _common_cells(r)
+            row_cells.extend(
+                [
+                    _fmt_stat(r.get("k"), "k"),
+                    _fmt_stat(r.get("w"), "w"),
+                    _fmt_stat(r.get("whip"), "whip"),
+                    _fmt_stat(r.get("sv_h"), "sv_h"),
+                    _color_adv(
+                        r.get("xera"),
+                        pit_avgs.get("xera"),
+                        digits=2,
+                        lower_better=True,
+                    ),
+                    _color_adv(
+                        r.get("xwoba_against"),
+                        pit_avgs.get("xwoba_against"),
+                        digits=3,
+                        lower_better=True,
+                    ),
+                    _color_adv(
+                        r.get("k_bb_pct"),
+                        pit_avgs.get("k_bb_pct"),
+                        digits=1,
+                    ),
+                    _color_adv(
+                        r.get("barrel_pct_against"),
+                        pit_avgs.get("barrel_pct_against"),
+                        digits=1,
+                        lower_better=True,
+                    ),
+                ]
+            )
+            pitcher_rows.append(row_cells)
+
+        section_style = (
+            "font-size:0.82rem;font-weight:700;color:#132747;"
+            "margin:0.25rem 0 0.4rem 0;letter-spacing:0.02em;"
+        )
+        empty_msg = ui.p("No matches.", style="color:#888;padding:0.25rem 0 0.75rem 0;")
+        return ui.div(
+            ui.div("Hitters", style=section_style),
+            _html_table(hitter_headers, hitter_rows) if hitter_rows else empty_msg,
+            ui.div("Pitchers", style=section_style + "margin-top:1rem;"),
+            _html_table(pitcher_headers, pitcher_rows) if pitcher_rows else empty_msg,
+        )
 
     # ── Roster ────────────────────────────────────────────────────────────
 
