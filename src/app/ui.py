@@ -341,8 +341,8 @@ app_ui = ui.page_navbar(
             _card(
                 "League Transactions",
                 _note(
-                    "Recent league transactions: adds, drops, and trades "
-                    "from the last 3 days, sorted by most recent."
+                    "Recent MLB transactions: call-ups, demotions, IL moves, "
+                    "DFAs, and releases from the last 3 days, sorted by most recent."
                 ),
                 ui.layout_columns(
                     ui.input_select(
@@ -350,9 +350,11 @@ app_ui = ui.page_navbar(
                         "Transaction Type",
                         choices={
                             "All": "All Types",
-                            "add": "➕ Adds",
-                            "drop": "➖ Drops",
-                            "trade": "🔄 Trades",
+                            "call_up": "⬆ Call-Ups",
+                            "demotion": "⬇ Demotions",
+                            "status_change": "🏥 IL / Status",
+                            "dfa": "✂️ DFA",
+                            "released": "🚫 Released",
                         },
                         selected="All",
                     ),

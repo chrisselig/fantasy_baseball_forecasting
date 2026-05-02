@@ -50,6 +50,26 @@ _MINOR_LEAGUE_LEVELS = [
 
 _CALLUP_COLUMNS = ["mlb_id", "full_name", "team", "transaction_date", "from_level"]
 
+# MLB transaction typeCodes we care about for the Transactions tab.
+# CU = call-up, DM = demotion, SC = status change (IL placement/activation),
+# ASG = assignment, DFA = designated for assignment, REL = released.
+_MLB_TXN_TYPE_MAP: dict[str, str] = {
+    "CU": "call_up",
+    "DM": "demotion",
+    "SC": "status_change",
+    "DFA": "dfa",
+    "REL": "released",
+}
+_MLB_TXN_COLUMNS = [
+    "mlb_id",
+    "full_name",
+    "team",
+    "position",
+    "txn_type",
+    "transaction_date",
+    "description",
+]
+
 _PLAYER_INFO_KEYS = [
     "mlb_id",
     "full_name",
@@ -265,6 +285,77 @@ def get_recent_callups(days: int = 7) -> pd.DataFrame:
         else _empty_df(_CALLUP_COLUMNS)
     )
     logger.info("Found %d call-up transactions in last %d days.", len(df), days)
+    return df
+
+
+def get_mlb_transactions(days: int = 3) -> pd.DataFrame:
+    """Fetch recent MLB transactions (call-ups, demotions, IL moves, DFAs, releases).
+
+    Source: GET /transactions?sportId=1&startDate=...&endDate=...
+    Filters for typeCodes defined in _MLB_TXN_TYPE_MAP.
+
+    Args:
+        days: Number of days to look back. Defaults to 3.
+
+    Returns:
+        DataFrame with columns defined in _MLB_TXN_COLUMNS, sorted by
+        transaction_date descending.
+    """
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=days)
+
+    params = {
+        "sportId": 1,
+        "startDate": start_date.strftime("%Y-%m-%d"),
+        "endDate": end_date.strftime("%Y-%m-%d"),
+    }
+
+    logger.debug("Fetching MLB transactions from %s to %s", start_date, end_date)
+
+    data = _mlb_get(_TRANSACTIONS_URL, params=params)
+    transactions = data.get("transactions", [])
+
+    rows: list[dict[str, Any]] = []
+    for txn in transactions:
+        type_code = txn.get("typeCode", "")
+        if type_code not in _MLB_TXN_TYPE_MAP:
+            continue
+
+        person = txn.get("person", {})
+        mlb_id = person.get("id")
+        if mlb_id is None:
+            continue
+
+        to_team = txn.get("toTeam", txn.get("fromTeam", {}))
+        position = person.get("primaryPosition", {}).get("abbreviation", "")
+
+        raw_date = txn.get("date", txn.get("effectiveDate", ""))
+        try:
+            txn_date = datetime.date.fromisoformat(raw_date[:10])
+        except (ValueError, IndexError):
+            txn_date = None
+
+        description = txn.get("description", txn.get("note", ""))
+
+        rows.append(
+            {
+                "mlb_id": int(mlb_id),
+                "full_name": person.get("fullName", ""),
+                "team": to_team.get("abbreviation", to_team.get("name", "")),
+                "position": position,
+                "txn_type": _MLB_TXN_TYPE_MAP[type_code],
+                "transaction_date": txn_date,
+                "description": description,
+            }
+        )
+
+    df = (
+        pd.DataFrame(rows, columns=_MLB_TXN_COLUMNS)
+        if rows
+        else _empty_df(_MLB_TXN_COLUMNS)
+    )
+    df = df.sort_values("transaction_date", ascending=False).reset_index(drop=True)
+    logger.info("Found %d MLB transactions in last %d days.", len(df), days)
     return df
 
 

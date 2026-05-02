@@ -31,7 +31,6 @@ from src.db.schema import (
     FACT_PLAYER_STATS_DAILY,
     FACT_PROJECTIONS,
     FACT_ROSTERS,
-    FACT_TRANSACTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -367,9 +366,11 @@ def _roster_slot_order(slot: Any) -> int:
 
 
 _TRANSACTION_TYPE_LABELS: dict[str, tuple[str, str]] = {
-    "add": ("➕ Add", "#2e7d32"),
-    "drop": ("➖ Drop", "#c62828"),
-    "trade": ("🔄 Trade", "#1a7fa1"),
+    "call_up": ("⬆ Call-Up", "#2e7d32"),
+    "demotion": ("⬇ Demotion", "#c62828"),
+    "status_change": ("🏥 IL / Status", "#e65100"),
+    "dfa": ("✂️ DFA", "#6a1b9a"),
+    "released": ("🚫 Released", "#333333"),
 }
 
 
@@ -1124,65 +1125,30 @@ def _color_adv(
 
 
 _TRANSACTIONS_COLS = [
-    "transaction_date",
-    "txn_type",
-    "player_id",
-    "player_name",
+    "mlb_id",
+    "full_name",
     "team",
     "position",
-    "notes",
+    "txn_type",
+    "transaction_date",
+    "description",
 ]
 
 
 def _load_transactions() -> pd.DataFrame:
-    """Load recent league transactions from MotherDuck.
+    """Fetch recent MLB transactions (call-ups, demotions, IL moves, DFAs, releases).
 
-    Joins with dim_players to get player names, teams, and positions for
-    display. Returns adds, drops, and trades from the Yahoo league.
+    Calls the MLB Stats API directly via mlb_client.get_mlb_transactions().
     """
-    empty = pd.DataFrame(columns=_TRANSACTIONS_COLS)
+    from src.api.mlb_client import get_mlb_transactions
+
     try:
-        with managed_connection() as conn:
-            # First try the join query for enriched data
-            try:
-                df: pd.DataFrame = conn.execute(f"""
-                    SELECT
-                        t.transaction_date,
-                        CAST(t.type AS VARCHAR) AS txn_type,
-                        t.player_id,
-                        COALESCE(p.full_name, t.player_id) AS player_name,
-                        COALESCE(p.team, '') AS team,
-                        COALESCE(
-                            ARRAY_TO_STRING(p.positions, ','),
-                            ''
-                        ) AS position,
-                        t.notes
-                    FROM {FACT_TRANSACTIONS} t
-                    LEFT JOIN {DIM_PLAYERS} p ON t.player_id = p.player_id
-                    WHERE t.transaction_date >= CURRENT_DATE - INTERVAL '3 days'
-                    ORDER BY t.transaction_date DESC
-                """).fetchdf()
-            except Exception as inner_exc:
-                logger.warning("Enriched txn query failed, trying raw: %s", inner_exc)
-                # Fall back to raw transactions without the join
-                df = conn.execute(f"""
-                    SELECT
-                        transaction_date,
-                        CAST(type AS VARCHAR) AS txn_type,
-                        player_id,
-                        player_id AS player_name,
-                        '' AS team,
-                        '' AS position,
-                        notes
-                    FROM {FACT_TRANSACTIONS}
-                    WHERE transaction_date >= CURRENT_DATE - INTERVAL '3 days'
-                    ORDER BY transaction_date DESC
-                """).fetchdf()
-            if not df.empty:
-                return df
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load transactions from DB: %s", exc)
-    return empty
+        df = get_mlb_transactions(days=3)
+        if not df.empty:
+            return df
+    except Exception as exc:
+        logger.warning("Could not fetch MLB transactions: %s", exc)
+    return pd.DataFrame(columns=_TRANSACTIONS_COLS)
 
 
 def _load_projections() -> pd.DataFrame:
@@ -2819,12 +2785,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             df = df[df["txn_type"] == type_filter]
         if df.empty:
             return ui.p("No transactions found.", style="color:#888;padding:0.5rem;")
-        headers = ["Date", "Type", "Player", "Notes"]
+        headers = ["Date", "Type", "Player", "Description"]
         rows_out: list[list[Any]] = []
         for _, r in df.head(50).iterrows():
             t = str(r.get("txn_type", ""))
             label, color = _TRANSACTION_TYPE_LABELS.get(t, (t, "#333"))
-            player_name = str(r.get("player_name", r.get("player_id", "—")))
+            player_name = str(r.get("full_name", r.get("player_name", "—")))
             team = str(r.get("team", ""))
             pos = str(r.get("position", ""))
             rows_out.append(
@@ -2842,7 +2808,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                         ),
                     ),
                     ui.tags.span(
-                        str(r.get("notes", "")),
+                        str(r.get("description", r.get("notes", ""))),
                         style="font-size:0.75rem;color:#4a6282;",
                     ),
                 ]
