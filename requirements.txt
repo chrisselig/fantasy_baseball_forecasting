@@ -1,6 +1,6 @@
 # Runtime dependencies for the Shiny app on shinyapps.io.
-# This app is READ-ONLY — it only reads from MotherDuck.
-# Pipeline deps (yahoo-oauth, pybaseball, requests) are intentionally excluded.
+# The app reads from MotherDuck and makes live MLB Stats API calls.
+# Pipeline-only deps (yahoo-oauth, pybaseball) are intentionally excluded.
 duckdb==1.4.4
 pandas>=2.2.0
 numpy>=1.26.0
@@ -9,3 +9,4 @@ python-dotenv>=1.0
 shiny>=1.0.0
 feedparser>=6.0
 nltk>=3.8
+requests>=2.31.0
