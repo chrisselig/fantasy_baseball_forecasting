@@ -604,3 +604,204 @@ def test_rank_free_agents_exposes_components(config: object) -> None:
     assert "fit_score" in result.columns
     assert "weighted_score" in result.columns
     assert "overall_score" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# 10. find_recommended_drop: pitcher/hitter type enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_find_recommended_drop_enforces_same_type(config: object) -> None:
+    """Adding a hitter should never recommend dropping a pitcher."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    # Roster with a low-score pitcher and a higher-score hitter on bench
+    roster = pd.DataFrame(
+        [
+            _make_player_row(
+                "sp_low",
+                eligible_positions=["SP"],
+                slot="BN",
+                overall_score=1.0,
+                w=0.5,
+                k=4.0,
+                whip=1.5,
+            ).to_dict(),
+            _make_player_row(
+                "of_bench",
+                eligible_positions=["OF"],
+                slot="BN",
+                overall_score=3.0,
+            ).to_dict(),
+            _make_player_row(
+                "of_active",
+                eligible_positions=["OF"],
+                slot="OF",
+                overall_score=7.0,
+            ).to_dict(),
+        ]
+    )
+
+    # Candidate is an OF (hitter) — should NOT recommend dropping sp_low
+    candidate = _make_player_row("new_of", eligible_positions=["OF"])
+    drop_id = find_recommended_drop(candidate, roster, config)
+
+    # Must drop a hitter, not the pitcher
+    assert drop_id == "of_bench", f"Expected of_bench drop, got {drop_id}"
+
+
+def test_find_recommended_drop_pitcher_for_pitcher(config: object) -> None:
+    """Adding a pitcher should recommend dropping a pitcher, not a hitter."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    roster = pd.DataFrame(
+        [
+            _make_player_row(
+                "rp_low",
+                eligible_positions=["RP"],
+                slot="BN",
+                overall_score=1.0,
+                sv_h=0.5,
+                k=2.0,
+                whip=1.6,
+            ).to_dict(),
+            _make_player_row(
+                "of_bench",
+                eligible_positions=["OF"],
+                slot="BN",
+                overall_score=0.5,  # lower than rp_low
+            ).to_dict(),
+        ]
+    )
+
+    # Candidate is an RP (pitcher)
+    candidate = _make_player_row("new_rp", eligible_positions=["RP"])
+    drop_id = find_recommended_drop(candidate, roster, config)
+
+    # Must drop the pitcher, even though the OF has a lower score
+    assert drop_id == "rp_low", f"Expected rp_low drop, got {drop_id}"
+
+
+# ---------------------------------------------------------------------------
+# 11. find_recommended_drop: exclude_ids prevents reuse
+# ---------------------------------------------------------------------------
+
+
+def test_find_recommended_drop_respects_exclude_ids(config: object) -> None:
+    """Excluding an ID forces the next-best drop candidate."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    roster = pd.DataFrame(
+        [
+            _make_player_row(
+                "bn1", eligible_positions=["OF"], slot="BN", overall_score=1.0
+            ).to_dict(),
+            _make_player_row(
+                "bn2", eligible_positions=["OF"], slot="BN", overall_score=2.0
+            ).to_dict(),
+        ]
+    )
+
+    candidate = _make_player_row("new_of", eligible_positions=["OF"])
+
+    # Without exclusion → picks bn1 (lowest score)
+    drop1 = find_recommended_drop(candidate, roster, config)
+    assert drop1 == "bn1"
+
+    # Exclude bn1 → picks bn2
+    drop2 = find_recommended_drop(candidate, roster, config, exclude_ids={"bn1"})
+    assert drop2 == "bn2"
+
+
+# ---------------------------------------------------------------------------
+# 12. Positional need: stacked position gets penalized in rankings
+# ---------------------------------------------------------------------------
+
+
+def test_rank_free_agents_penalizes_stacked_position(config: object) -> None:
+    """A catcher FA should be penalized when roster already has a strong catcher."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    # Roster with a strong catcher but weak OF (below median).
+    # Median will be driven by the mix — C at 9.0 is above median, OF at 2.0 below.
+    roster = pd.DataFrame(
+        [
+            _make_player_row(
+                "c1",
+                eligible_positions=["C"],
+                slot="C",
+                overall_score=9.0,
+                h=4.0,
+                hr=2.0,
+            ).to_dict(),
+            _make_player_row(
+                "of1",
+                eligible_positions=["OF"],
+                slot="OF",
+                overall_score=2.0,
+                h=1.0,
+                hr=0.5,
+            ).to_dict(),
+            _make_player_row(
+                "of2",
+                eligible_positions=["OF"],
+                slot="OF",
+                overall_score=2.0,
+                h=1.5,
+                hr=0.5,
+            ).to_dict(),
+            _make_player_row(
+                "of3",
+                eligible_positions=["OF"],
+                slot="OF",
+                overall_score=2.0,
+                h=1.0,
+                hr=0.5,
+            ).to_dict(),
+            _make_player_row(
+                "sp1",
+                eligible_positions=["SP"],
+                slot="SP",
+                overall_score=7.0,
+                w=1.0,
+                k=7.0,
+                whip=1.1,
+            ).to_dict(),
+            _make_player_row(
+                "bn1",
+                eligible_positions=["OF"],
+                slot="BN",
+                overall_score=1.0,
+            ).to_dict(),
+        ]
+    )
+    matchup = _make_matchup_df()
+    callups = pd.DataFrame(columns=["player_id", "days_since_callup"])
+
+    # Two FAs with identical raw stats: one C, one OF
+    fa_c = _make_player_row("fa_c", eligible_positions=["C"], hr=2.0, h=3.0).to_dict()
+    fa_of = _make_player_row(
+        "fa_of", eligible_positions=["OF"], hr=2.0, h=3.0
+    ).to_dict()
+    free_agents = pd.DataFrame([fa_c, fa_of])
+
+    result = rank_free_agents(free_agents, roster, matchup, callups, config)
+
+    c_score = float(result.loc[result["player_id"] == "fa_c", "overall_score"].iloc[0])
+    of_score = float(
+        result.loc[result["player_id"] == "fa_of", "overall_score"].iloc[0]
+    )
+
+    # C should be penalized (already stacked), OF should rank higher
+    assert of_score > c_score, (
+        f"Expected OF FA to rank higher than C FA when C is stacked. "
+        f"OF={of_score:.3f}, C={c_score:.3f}"
+    )

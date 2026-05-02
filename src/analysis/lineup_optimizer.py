@@ -347,11 +347,22 @@ def recommend_adds(
             break
 
         add_id = str(row.get("player_id", ""))
-        drop_id = str(row.get("recommended_drop_id", ""))
         score = float(row.get("overall_score", 0.0))
         fit_score = float(row.get("fit_score", 0.0))
 
-        if not add_id or not drop_id:
+        if not add_id:
+            continue
+
+        # Re-compute drop recommendation with exclusions so each add gets
+        # a unique drop target. This uses the position-aware logic from
+        # waiver_ranker (pitcher↔pitcher, hitter↔hitter enforcement).
+        from src.analysis.waiver_ranker import find_recommended_drop
+
+        drop_id = find_recommended_drop(
+            row, my_roster_df, config, exclude_ids=used_drop_ids
+        )
+
+        if not drop_id:
             continue
         if drop_id in used_drop_ids:
             continue
