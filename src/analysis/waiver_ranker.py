@@ -298,13 +298,19 @@ def score_free_agent(
 
 
 def _get_positions_list(player: pd.Series[Any] | Any) -> list[str]:
-    """Extract a flat list of position strings from a player row."""
+    """Extract a flat list of position strings from a player row.
+
+    Checks columns in priority order: eligible_positions (list from Yahoo),
+    positions (plural), position (singular display string like "SP,P").
+    """
     ep: Any = None
     if isinstance(player, pd.Series):
         if "eligible_positions" in player.index:
             ep = player["eligible_positions"]
         elif "positions" in player.index:
             ep = player["positions"]
+        elif "position" in player.index:
+            ep = player["position"]
     else:
         ep = player
 
@@ -394,15 +400,11 @@ def find_recommended_drop(
         return ""
 
     candidate_positions = _get_positions_list(candidate_player)
-    candidate_is_pitcher = _is_pitcher(
-        candidate_player.get(
-            "eligible_positions", candidate_player.get("positions", [])
-        )
-    )
+    candidate_is_pitcher = _is_pitcher(candidate_positions)
 
     # Filter to same player type — never drop a pitcher to add a hitter or vice versa
     def _row_is_pitcher(row: pd.Series[Any]) -> bool:
-        return _is_pitcher(row.get("eligible_positions", row.get("positions", [])))
+        return _is_pitcher(_get_positions_list(row))
 
     type_mask = df.apply(_row_is_pitcher, axis=1)
     same_type_df = df[type_mask] if candidate_is_pitcher else df[~type_mask]

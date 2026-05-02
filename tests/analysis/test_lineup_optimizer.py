@@ -737,12 +737,25 @@ def test_recommend_adds_callup_note_for_recent_callup(config: object) -> None:
             {
                 "player_id": "fa_callup",
                 "overall_score": 7.0,
+                "fit_score": 5.0,
                 "category_scores": json.dumps({"sb": 2.0}),
                 "recommended_drop_id": "bench_of",
                 "is_callup": True,
                 "days_since_callup": 3.0,
                 "position": "OF",
+                "eligible_positions": ["OF"],
                 "streak": "—",
+                "h": 3.0,
+                "hr": 1.0,
+                "sb": 2.0,
+                "bb": 1.0,
+                "avg": 0.280,
+                "ops": 0.800,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
             }
         ]
     )
@@ -755,6 +768,17 @@ def test_recommend_adds_callup_note_for_recent_callup(config: object) -> None:
                 "overall_score": 1.5,
                 "position": "OF",
                 "streak": "—",
+                "h": 1.0,
+                "hr": 0.2,
+                "sb": 0.3,
+                "bb": 0.5,
+                "avg": 0.210,
+                "ops": 0.600,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
             }
         ]
     )
@@ -921,3 +945,68 @@ def test_recommend_adds_protects_sole_position_player(config: object) -> None:
         assert add["drop_player_id"] != "only_ss", (
             "Should not drop the only SS-eligible player for an OF pickup"
         )
+
+
+# ---------------------------------------------------------------------------
+# 14. recommend_adds: absolute quality floor rejects replacement-level hitters
+# ---------------------------------------------------------------------------
+
+
+def test_recommend_adds_rejects_replacement_level_hitter(config: object) -> None:
+    """A hitter with .150 AVG should never be recommended regardless of z-score."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = pd.DataFrame(
+        [
+            {
+                "player_id": "fa_terrible",
+                "overall_score": 5.0,
+                "fit_score": 3.0,
+                "category_scores": json.dumps({}),
+                "recommended_drop_id": "bench_of",
+                "is_callup": False,
+                "days_since_callup": float("nan"),
+                "position": "OF",
+                "eligible_positions": ["OF"],
+                "streak": "—",
+                "h": 0.5,
+                "hr": 0.0,
+                "sb": 0.0,
+                "bb": 0.0,
+                "avg": 0.153,
+                "ops": 0.460,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    roster = pd.DataFrame(
+        [
+            {
+                "player_id": "bench_of",
+                "slot": "BN",
+                "eligible_positions": ["OF"],
+                "overall_score": 1.0,
+                "position": "OF",
+                "h": 0.3,
+                "hr": 0.0,
+                "sb": 0.0,
+                "bb": 0.0,
+                "avg": 0.180,
+                "ops": 0.420,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    assert len(adds) == 0, f"Expected 0 adds for a .153 AVG hitter, got {len(adds)}"

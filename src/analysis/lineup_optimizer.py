@@ -22,8 +22,25 @@ _FOCUS_STATUSES = {"flippable_win", "toss_up", "flippable_loss"}
 
 def _position_is_pitcher(pos: str) -> bool:
     """Return True when the position string contains a pitcher slot."""
-    parts = {p.strip().upper() for p in pos.replace("/", ",").split(",")}
+    if not pos:
+        return False
+    # Handle list-like strings: "['SP']" → "SP"
+    cleaned = str(pos).strip("[]'\"")
+    parts = {p.strip().upper() for p in cleaned.replace("/", ",").split(",")}
     return bool(parts & _PITCHER_SLOTS)
+
+
+def _safe_float(row: pd.Series[Any], col: str) -> float:
+    """Safely extract a float from a Series column, defaulting to 0.0."""
+    if col not in row.index:
+        return 0.0
+    val = row[col]
+    if pd.isna(val):
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _get_flippable_categories(matchup_df: pd.DataFrame) -> set[str]:
@@ -400,6 +417,24 @@ def recommend_adds(
         if drop_id in used_drop_ids:
             continue
 
+        # ── Absolute quality floor ────────────────────────────────────────
+        # A GM would never roster a hitter batting .150 or a pitcher with a
+        # 2.0 WHIP regardless of what the z-score model says. These are
+        # replacement-level or worse players that no transaction can justify.
+        if not _position_is_pitcher(
+            str(row.get("position", row.get("eligible_positions", "")))
+        ):
+            fa_avg = _safe_float(row, "avg")
+            fa_ops = _safe_float(row, "ops")
+            if fa_avg > 0 and fa_avg < 0.200:
+                continue
+            if fa_ops > 0 and fa_ops < 0.550:
+                continue
+        else:
+            fa_whip = _safe_float(row, "whip")
+            if fa_whip > 2.00:
+                continue
+
         # ── Re-score the FA against the actual drop candidate ─────────────
         # The waiver DF score was computed against the original drop before
         # exclusions. Now that we have the real drop, re-score so the numbers
@@ -417,14 +452,15 @@ def recommend_adds(
         fit_score = float(rescored.get("fit_score", 0.0))  # type: ignore[arg-type]
         cat_scores: dict[str, float] = rescored.get("category_scores", {})  # type: ignore[assignment]
 
-        # ── GM quality gate: never recommend a net-negative swap ──────────
-        # If the FA is worse than the drop across the board, skip. A GM
-        # doesn't make a move just to make a move — every transaction costs
-        # one of your limited weekly adds.
+        # ── GM quality gate ────────────────────────────────────────────────
+        # 1. Never recommend a net-negative swap. A GM doesn't burn one of
+        #    5 weekly adds to make the team worse.
+        # 2. Even at score > 0, require at least one category that actually
+        #    improves — a score of +0.01 driven by rounding isn't actionable.
         positive_cats = sum(1 for v in cat_scores.values() if v > 0)
         negative_cats = sum(1 for v in cat_scores.values() if v < 0)
-        # Only skip if we have enough signal (non-zero cats) AND the swap
-        # is a clear downgrade: no positive categories and at least one negative.
+        if score <= 0:
+            continue
         if negative_cats > 0 and positive_cats == 0:
             continue
 
