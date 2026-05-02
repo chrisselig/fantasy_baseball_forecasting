@@ -575,25 +575,39 @@ def test_build_daily_report_is_json_serializable(config: object) -> None:
 
 
 def _make_enriched_waiver_df() -> pd.DataFrame:
-    """Waiver DF with position, streak, callup, and category_scores fields."""
+    """Waiver DF with position, streak, callup, and per-game stat fields."""
     return pd.DataFrame(
         [
             {
                 "player_id": "fa_sp",
                 "overall_score": 8.0,
+                "fit_score": 6.0,
                 "category_scores": json.dumps({"k": 2.0, "w": 1.5}),
                 "recommended_drop_id": "bench_sp",
                 "is_callup": False,
                 "days_since_callup": float("nan"),
                 "position": "SP",
+                "eligible_positions": ["SP"],
                 "streak": "🔥 Hot",
+                # Per-game stats so re-scoring produces positive results
+                "w": 1.0,
+                "k": 9.0,
+                "whip": 0.95,
+                "k_bb": 4.0,
+                "sv_h": 0.0,
+                "h": 0.0,
+                "hr": 0.0,
+                "sb": 0.0,
+                "bb": 0.0,
+                "avg": 0.0,
+                "ops": 0.0,
             }
         ]
     )
 
 
 def _make_enriched_roster_df() -> pd.DataFrame:
-    """Roster DF with position, streak, and overall_score fields."""
+    """Roster DF with position, streak, overall_score, and per-game stats."""
     return pd.DataFrame(
         [
             {
@@ -603,6 +617,17 @@ def _make_enriched_roster_df() -> pd.DataFrame:
                 "overall_score": 2.0,
                 "position": "SP",
                 "streak": "❄️ Cold",
+                "w": 0.2,
+                "k": 3.0,
+                "whip": 1.60,
+                "k_bb": 1.5,
+                "sv_h": 0.0,
+                "h": 0.0,
+                "hr": 0.0,
+                "sb": 0.0,
+                "bb": 0.0,
+                "avg": 0.0,
+                "ops": 0.0,
             }
         ]
     )
@@ -756,3 +781,143 @@ def test_recommend_adds_matchup_context_with_matchup_df(config: object) -> None:
     assert adds[0]["matchup_context"] != "", (
         "matchup_context should be populated when matchup_df is provided"
     )
+
+
+# ---------------------------------------------------------------------------
+# 12. recommend_adds: rejects net-negative swaps (GM quality gate)
+# ---------------------------------------------------------------------------
+
+
+def test_recommend_adds_rejects_downgrade(config: object) -> None:
+    """A swap where the FA is worse than the drop in every category should be rejected."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    # The FA has worse stats than the drop in all categories
+    waiver = pd.DataFrame(
+        [
+            {
+                "player_id": "fa_bad",
+                "overall_score": -2.0,
+                "fit_score": -1.5,
+                "category_scores": json.dumps({}),
+                "recommended_drop_id": "good_of",
+                "is_callup": False,
+                "days_since_callup": float("nan"),
+                "position": "OF",
+                "eligible_positions": ["OF"],
+                "streak": "—",
+                # Terrible stats
+                "h": 0.5,
+                "hr": 0.0,
+                "sb": 0.0,
+                "bb": 0.0,
+                "avg": 0.150,
+                "ops": 0.400,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    roster = pd.DataFrame(
+        [
+            {
+                "player_id": "good_of",
+                "slot": "BN",
+                "eligible_positions": ["OF"],
+                "overall_score": 7.0,
+                "position": "OF",
+                "streak": "—",
+                # Much better stats
+                "h": 3.0,
+                "hr": 1.5,
+                "sb": 1.0,
+                "bb": 1.5,
+                "avg": 0.290,
+                "ops": 0.850,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    # Should produce 0 recommendations — the swap is a downgrade
+    assert len(adds) == 0, f"Expected 0 adds for a net-negative swap, got {len(adds)}"
+
+
+# ---------------------------------------------------------------------------
+# 13. recommend_adds: positional scarcity prevents dropping sole SS
+# ---------------------------------------------------------------------------
+
+
+def test_recommend_adds_protects_sole_position_player(config: object) -> None:
+    """Should not recommend dropping the only SS-eligible player for an OF pickup."""
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    waiver = pd.DataFrame(
+        [
+            {
+                "player_id": "fa_of",
+                "overall_score": 5.0,
+                "fit_score": 3.0,
+                "category_scores": json.dumps({"h": 1.0, "sb": 0.5}),
+                "recommended_drop_id": "only_ss",
+                "is_callup": False,
+                "days_since_callup": float("nan"),
+                "position": "OF",
+                "eligible_positions": ["OF"],
+                "streak": "—",
+                "h": 3.0,
+                "hr": 0.5,
+                "sb": 1.0,
+                "bb": 1.0,
+                "avg": 0.270,
+                "ops": 0.780,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    roster = pd.DataFrame(
+        [
+            {
+                "player_id": "only_ss",
+                "slot": "SS",
+                "eligible_positions": ["SS"],
+                "overall_score": 3.0,
+                "position": "SS",
+                "h": 1.5,
+                "hr": 0.2,
+                "sb": 0.5,
+                "bb": 0.5,
+                "avg": 0.230,
+                "ops": 0.650,
+                "w": 0.0,
+                "k": 0.0,
+                "whip": 0.0,
+                "k_bb": 0.0,
+                "sv_h": 0.0,
+            }
+        ]
+    )
+    adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
+
+    # The sole SS should be protected — no valid drop exists, so 0 adds
+    # (or if there were other droppable players, the SS wouldn't be chosen)
+    for add in adds:
+        assert add["drop_player_id"] != "only_ss", (
+            "Should not drop the only SS-eligible player for an OF pickup"
+        )

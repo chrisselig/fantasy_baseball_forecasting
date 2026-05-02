@@ -297,6 +297,58 @@ def score_free_agent(
     }
 
 
+def _get_positions_list(player: pd.Series[Any] | Any) -> list[str]:
+    """Extract a flat list of position strings from a player row."""
+    ep: Any = None
+    if isinstance(player, pd.Series):
+        if "eligible_positions" in player.index:
+            ep = player["eligible_positions"]
+        elif "positions" in player.index:
+            ep = player["positions"]
+    else:
+        ep = player
+
+    if ep is None:
+        return []
+    if isinstance(ep, np.ndarray):
+        if ep.ndim == 0:
+            return [str(ep).strip()]
+        return [str(p).strip() for p in ep]
+    if isinstance(ep, (list, tuple)):
+        return [str(p).strip() for p in ep]
+    if isinstance(ep, str):
+        return [p.strip() for p in ep.replace("/", ",").split(",")]
+    return []
+
+
+# Single-slot active positions where losing your only eligible player
+# creates a lineup hole that can't be filled. Multi-slot positions (OF × 3,
+# Util × 2) are less scarce — losing one still leaves alternatives.
+_SCARCE_POSITIONS: set[str] = {"C", "1B", "2B", "3B", "SS"}
+
+
+def _is_sole_eligible(
+    player_id: str,
+    position: str,
+    roster_df: pd.DataFrame,
+    exclude_ids: set[str],
+) -> bool:
+    """Return True when *player_id* is the only roster player eligible at *position*.
+
+    Checks the full roster (minus already-excluded players). If dropping this
+    player would leave zero players who can fill the position, it's "sole eligible."
+    """
+    other = roster_df[
+        (roster_df["player_id"].astype(str) != player_id)
+        & (~roster_df["player_id"].astype(str).isin(exclude_ids))
+    ]
+    for _, row in other.iterrows():
+        row_positions = _get_positions_list(row)
+        if position in row_positions:
+            return False
+    return True
+
+
 def find_recommended_drop(
     candidate_player: pd.Series[Any],
     my_roster_df: pd.DataFrame,
@@ -305,9 +357,11 @@ def find_recommended_drop(
 ) -> str:
     """Find the best player to drop when adding the candidate.
 
-    Uses a baseball-GM approach: enforce same player type (pitcher for pitcher,
-    hitter for hitter), respect positional scarcity, and prefer bench/low-value
-    players.
+    Uses a baseball-GM approach:
+      - Enforce same player type (pitcher↔pitcher, hitter↔hitter).
+      - Protect positionally scarce players (sole C, sole SS, etc.) unless the
+        candidate can also play that position.
+      - Prefer bench dead weight → bench → active at shared position → active.
 
     Priority:
       1. Same-type bench players with no games remaining (lowest score first).
@@ -315,8 +369,9 @@ def find_recommended_drop(
       3. Same-type active players at shared positions (lowest score first).
       4. Same-type active players (lowest score, last-resort within type).
 
-    Never recommends dropping across player types (e.g. dropping a pitcher to
-    add a catcher) — a roster needs both pitching and hitting to compete.
+    At every tier, players who are the sole eligible at a scarce position
+    (C/1B/2B/3B/SS) are protected — unless the FA candidate can also play
+    that position, meaning the roster hole would be filled by the add.
 
     Args:
         candidate_player: The free agent being evaluated.
@@ -338,19 +393,12 @@ def find_recommended_drop(
     if df.empty:
         return ""
 
-    # Determine candidate's player type (pitcher vs hitter)
-    candidate_positions: list[str] = []
-    ep: Any = None
-    if "eligible_positions" in candidate_player.index:
-        ep = candidate_player["eligible_positions"]
-    elif "positions" in candidate_player.index:
-        ep = candidate_player["positions"]
-    if isinstance(ep, (list, tuple, np.ndarray)):
-        candidate_positions = [str(p) for p in ep]
-    elif isinstance(ep, str):
-        candidate_positions = [p.strip() for p in ep.split(",")]
-
-    candidate_is_pitcher = _is_pitcher(ep)
+    candidate_positions = _get_positions_list(candidate_player)
+    candidate_is_pitcher = _is_pitcher(
+        candidate_player.get(
+            "eligible_positions", candidate_player.get("positions", [])
+        )
+    )
 
     # Filter to same player type — never drop a pitcher to add a hitter or vice versa
     def _row_is_pitcher(row: pd.Series[Any]) -> bool:
@@ -363,14 +411,42 @@ def find_recommended_drop(
     if same_type_df.empty:
         same_type_df = df
 
+    # ── Positional scarcity protection ────────────────────────────────────
+    # Build a set of player_ids that are "protected" because they're the sole
+    # eligible player at a scarce position, and the FA can't fill that slot.
+    protected_ids: set[str] = set()
+    for scarce_pos in _SCARCE_POSITIONS:
+        # Count active roster slots for this position
+        slot_count = config.active_positions.count(scarce_pos)
+        if slot_count == 0:
+            continue
+        for _, row in same_type_df.iterrows():
+            pid = str(row["player_id"])
+            row_positions = _get_positions_list(row)
+            if scarce_pos not in row_positions:
+                continue
+            # If the FA can also play this position, dropping this player is OK
+            if scarce_pos in candidate_positions:
+                continue
+            # Check if this player is the sole eligible at this scarce position
+            if _is_sole_eligible(pid, scarce_pos, my_roster_df, exclude_ids):
+                protected_ids.add(pid)
+
+    # Remove protected players from consideration
+    droppable = same_type_df[~same_type_df["player_id"].astype(str).isin(protected_ids)]
+    # If ALL same-type players are protected, there is no safe drop.
+    # A GM would not create a lineup hole just to add a free agent.
+    if droppable.empty:
+        return ""
+
     bench_slots = set(config.bench_slots)
 
     def is_bench_only(row: pd.Series[Any]) -> bool:
         slot = str(row.get("slot", row.get("roster_slot", "")))
         return slot in bench_slots
 
-    bench_candidates = same_type_df[same_type_df.apply(is_bench_only, axis=1)]
-    active_candidates = same_type_df[~same_type_df.apply(is_bench_only, axis=1)]
+    bench_candidates = droppable[droppable.apply(is_bench_only, axis=1)]
+    active_candidates = droppable[~droppable.apply(is_bench_only, axis=1)]
 
     # Priority 1: Bench players with no games remaining
     if not bench_candidates.empty:
@@ -398,14 +474,8 @@ def find_recommended_drop(
     if candidate_positions:
 
         def shares_position(row: pd.Series[Any]) -> bool:
-            row_ep = row.get("eligible_positions", [])
-            if isinstance(row_ep, (list, tuple, np.ndarray)):
-                ep_list = [str(p) for p in row_ep]
-            elif isinstance(row_ep, str):
-                ep_list = [p.strip() for p in row_ep.split(",")]
-            else:
-                return False
-            return bool(set(candidate_positions) & set(ep_list))
+            row_positions = _get_positions_list(row)
+            return bool(set(candidate_positions) & set(row_positions))
 
         pos_matches = active_candidates[
             active_candidates.apply(shares_position, axis=1)
@@ -417,13 +487,11 @@ def find_recommended_drop(
                 )
             return str(pos_matches.iloc[0]["player_id"])
 
-    # Priority 4: Any same-type player (last resort)
-    if not same_type_df.empty:
-        if "overall_score" in same_type_df.columns:
-            return str(
-                same_type_df.loc[same_type_df["overall_score"].idxmin(), "player_id"]
-            )
-        return str(same_type_df.iloc[0]["player_id"])
+    # Priority 4: Any same-type droppable player (last resort)
+    if not droppable.empty:
+        if "overall_score" in droppable.columns:
+            return str(droppable.loc[droppable["overall_score"].idxmin(), "player_id"])
+        return str(droppable.iloc[0]["player_id"])
 
     return ""
 

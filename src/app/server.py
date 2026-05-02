@@ -1889,12 +1889,20 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 ),
                 style=(
                     "background:#0d1f38;border:1px solid #1e3a5f;border-radius:6px;"
-                    "padding:0.75rem 1rem;margin-bottom:0.75rem;overflow:hidden;"
+                    "padding:0.75rem 1rem;overflow:hidden;"
                 ),
             )
             cards.append(card)
 
-        return ui.tags.div(*cards, style="padding:0.25rem 0;")
+        return ui.tags.div(
+            *cards,
+            style=(
+                "display:grid;"
+                "grid-template-columns:repeat(auto-fill, minmax(380px, 1fr));"
+                "gap:0.75rem;"
+                "padding:0.25rem 0;"
+            ),
+        )
 
     # ── Matchup Detail ────────────────────────────────────────────────────
 
