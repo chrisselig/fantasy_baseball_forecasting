@@ -58,6 +58,26 @@ _ALPHA_EARLY = 0.55
 _ALPHA_LATE = 0.10
 _DEFAULT_SEASON_PROGRESS = 0.5  # mid-season fallback
 
+# Positional need penalty: discount applied to overall_score when a player
+# fills a position where the roster is already strong (all active slots filled
+# with above-average performers). Prevents "you already have a great catcher"
+# recommendations. The penalty is multiplicative: 1.0 = no penalty, 0.0 = full.
+_POSITIONAL_SURPLUS_PENALTY = 0.35  # 65% penalty when position is stacked
+
+# Positions that map to active roster slots (excludes Util, BN, IL, NA).
+# Used to count how many slots exist per position.
+_POSITION_SLOT_MAP: dict[str, list[str]] = {
+    "C": ["C"],
+    "1B": ["1B"],
+    "2B": ["2B"],
+    "3B": ["3B"],
+    "SS": ["SS"],
+    "OF": ["OF"],
+    "SP": ["SP"],
+    "RP": ["RP"],
+    "P": ["P"],
+}
+
 # Categories where "lower is better" (rate stats where we want to minimize)
 _LOWER_BETTER: set[str] = {"whip"}
 
@@ -115,7 +135,12 @@ def _is_pitcher(positions: Any) -> bool:
     """Return True when the player's positions include SP/RP/P."""
     if positions is None:
         return False
-    if isinstance(positions, (list, tuple, np.ndarray)):
+    if isinstance(positions, np.ndarray):
+        # Handle 0-d arrays (scalar wrapped in ndarray)
+        if positions.ndim == 0:
+            return str(positions).upper() in _PITCHER_POSITIONS
+        return bool({str(p).upper() for p in positions} & _PITCHER_POSITIONS)
+    if isinstance(positions, (list, tuple)):
         return bool({str(p).upper() for p in positions} & _PITCHER_POSITIONS)
     if isinstance(positions, str):
         parts = [p.strip().upper() for p in positions.replace("/", ",").split(",")]
@@ -276,20 +301,44 @@ def find_recommended_drop(
     candidate_player: pd.Series[Any],
     my_roster_df: pd.DataFrame,
     config: LeagueSettings,
+    exclude_ids: set[str] | None = None,
 ) -> str:
     """Find the best player to drop when adding the candidate.
 
+    Uses a baseball-GM approach: enforce same player type (pitcher for pitcher,
+    hitter for hitter), respect positional scarcity, and prefer bench/low-value
+    players.
+
     Priority:
-      1. Bench players with no games remaining (lowest overall_score first).
-      2. Bench players (lowest overall_score first).
-      3. Active players sharing the candidate's position eligibility.
-      4. Lowest-scoring player overall (last-resort fallback).
+      1. Same-type bench players with no games remaining (lowest score first).
+      2. Same-type bench players (lowest score first).
+      3. Same-type active players at shared positions (lowest score first).
+      4. Same-type active players (lowest score, last-resort within type).
+
+    Never recommends dropping across player types (e.g. dropping a pitcher to
+    add a catcher) — a roster needs both pitching and hitting to compete.
+
+    Args:
+        candidate_player: The free agent being evaluated.
+        my_roster_df: Current roster DataFrame.
+        config: League settings (bench slot names).
+        exclude_ids: Player IDs to skip (already used as drops this cycle).
     """
     if my_roster_df.empty:
         return ""
 
+    if exclude_ids is None:
+        exclude_ids = set()
+
     df = my_roster_df.copy()
 
+    # Remove excluded players (already recommended as drops in this batch)
+    if exclude_ids:
+        df = df[~df["player_id"].astype(str).isin(exclude_ids)]
+    if df.empty:
+        return ""
+
+    # Determine candidate's player type (pitcher vs hitter)
     candidate_positions: list[str] = []
     ep: Any = None
     if "eligible_positions" in candidate_player.index:
@@ -301,15 +350,29 @@ def find_recommended_drop(
     elif isinstance(ep, str):
         candidate_positions = [p.strip() for p in ep.split(",")]
 
+    candidate_is_pitcher = _is_pitcher(ep)
+
+    # Filter to same player type — never drop a pitcher to add a hitter or vice versa
+    def _row_is_pitcher(row: pd.Series[Any]) -> bool:
+        return _is_pitcher(row.get("eligible_positions", row.get("positions", [])))
+
+    type_mask = df.apply(_row_is_pitcher, axis=1)
+    same_type_df = df[type_mask] if candidate_is_pitcher else df[~type_mask]
+
+    # If no same-type players exist (unlikely), fall back to full roster
+    if same_type_df.empty:
+        same_type_df = df
+
     bench_slots = set(config.bench_slots)
 
     def is_bench_only(row: pd.Series[Any]) -> bool:
         slot = str(row.get("slot", row.get("roster_slot", "")))
         return slot in bench_slots
 
-    bench_candidates = df[df.apply(is_bench_only, axis=1)]
-    active_candidates = df[~df.apply(is_bench_only, axis=1)]
+    bench_candidates = same_type_df[same_type_df.apply(is_bench_only, axis=1)]
+    active_candidates = same_type_df[~same_type_df.apply(is_bench_only, axis=1)]
 
+    # Priority 1: Bench players with no games remaining
     if not bench_candidates.empty:
         if "games_remaining" in bench_candidates.columns:
             no_games = bench_candidates[
@@ -322,6 +385,7 @@ def find_recommended_drop(
                     )
                 return str(no_games.iloc[0]["player_id"])
 
+        # Priority 2: Bench players (lowest score)
         if "overall_score" in bench_candidates.columns:
             return str(
                 bench_candidates.loc[
@@ -330,14 +394,15 @@ def find_recommended_drop(
             )
         return str(bench_candidates.iloc[0]["player_id"])
 
+    # Priority 3: Active players sharing the candidate's position eligibility
     if candidate_positions:
 
         def shares_position(row: pd.Series[Any]) -> bool:
-            ep = row.get("eligible_positions", [])
-            if isinstance(ep, (list, tuple, np.ndarray)):
-                ep_list = [str(p) for p in ep]
-            elif isinstance(ep, str):
-                ep_list = [p.strip() for p in ep.split(",")]
+            row_ep = row.get("eligible_positions", [])
+            if isinstance(row_ep, (list, tuple, np.ndarray)):
+                ep_list = [str(p) for p in row_ep]
+            elif isinstance(row_ep, str):
+                ep_list = [p.strip() for p in row_ep.split(",")]
             else:
                 return False
             return bool(set(candidate_positions) & set(ep_list))
@@ -352,10 +417,13 @@ def find_recommended_drop(
                 )
             return str(pos_matches.iloc[0]["player_id"])
 
-    if not df.empty:
-        if "overall_score" in df.columns:
-            return str(df.loc[df["overall_score"].idxmin(), "player_id"])
-        return str(df.iloc[0]["player_id"])
+    # Priority 4: Any same-type player (last resort)
+    if not same_type_df.empty:
+        if "overall_score" in same_type_df.columns:
+            return str(
+                same_type_df.loc[same_type_df["overall_score"].idxmin(), "player_id"]
+            )
+        return str(same_type_df.iloc[0]["player_id"])
 
     return ""
 
@@ -368,6 +436,100 @@ def alpha_from_season_progress(progress: float) -> float:
     """
     progress = max(0.0, min(1.0, float(progress)))
     return _ALPHA_EARLY - (_ALPHA_EARLY - _ALPHA_LATE) * progress
+
+
+def _compute_positional_need(
+    my_roster_df: pd.DataFrame, config: LeagueSettings
+) -> dict[str, float]:
+    """Compute a per-position need multiplier (1.0 = needed, penalized if stacked).
+
+    For each position, counts the active roster slots allocated in the league
+    and the number of quality players (above-median overall_score) already on
+    the roster at that position. When a position is fully covered by strong
+    players, returns a penalty multiplier; when there's a gap or weakness,
+    returns 1.0 (no penalty).
+
+    Pitchers are evaluated as a group (SP/RP/P slots combined) because pitcher
+    fungibility is high in H2H categories.
+    """
+    if my_roster_df.empty:
+        return {}
+
+    # Count available active slots per position from league config
+    active_slots = config.active_positions
+    slot_counts: dict[str, int] = {}
+    for slot in active_slots:
+        slot_counts[slot] = slot_counts.get(slot, 0) + 1
+    # Util slots can be filled by anyone — don't count them as position-specific
+    slot_counts.pop("Util", None)
+
+    # Determine roster quality at each position
+    need: dict[str, float] = {}
+
+    # Median overall_score across roster as quality threshold
+    if "overall_score" not in my_roster_df.columns:
+        return {}
+    median_score = float(my_roster_df["overall_score"].median())
+
+    for pos, n_slots in slot_counts.items():
+        # Find roster players eligible at this position
+        _pos = pos  # bind for lambda closure
+        eligible_mask = my_roster_df.apply(
+            lambda row, p=_pos: _player_eligible_at(row, p), axis=1
+        )
+        eligible = my_roster_df[eligible_mask]
+        if eligible.empty:
+            need[pos] = 1.0  # big need — no one at this position
+            continue
+
+        # Count how many are above-median quality (strictly above)
+        quality_count = int((eligible["overall_score"] > median_score).sum())
+
+        # If quality players exceed or meet the slot count, position is stacked
+        if quality_count >= n_slots:
+            need[pos] = _POSITIONAL_SURPLUS_PENALTY
+        else:
+            need[pos] = 1.0
+
+    return need
+
+
+def _player_eligible_at(row: pd.Series[Any], position: str) -> bool:
+    """Check if a roster row is eligible at the given position."""
+    ep = row.get("eligible_positions", row.get("positions", []))
+    if isinstance(ep, np.ndarray):
+        if ep.ndim == 0:
+            return str(ep).upper() == position.upper()
+        return position in [str(p) for p in ep]
+    if isinstance(ep, (list, tuple)):
+        return position in [str(p) for p in ep]
+    if isinstance(ep, str):
+        parts = [p.strip() for p in ep.replace("/", ",").split(",")]
+        return position in parts
+    return False
+
+
+def _positional_need_multiplier(
+    player_positions: Any,
+    need_map: dict[str, float],
+) -> float:
+    """Return the best (highest) need multiplier across the player's positions.
+
+    A multi-position player gets the benefit of their most needed position.
+    E.g. a 2B/SS where SS is needed but 2B is stacked → gets 1.0.
+    """
+    if not need_map:
+        return 1.0
+    positions: list[str] = []
+    if isinstance(player_positions, (list, tuple, np.ndarray)):
+        positions = [str(p) for p in player_positions]
+    elif isinstance(player_positions, str):
+        positions = [p.strip() for p in player_positions.replace("/", ",").split(",")]
+    if not positions:
+        return 1.0
+    # Pitcher positions are evaluated as a group
+    multipliers = [need_map.get(p, 1.0) for p in positions]
+    return max(multipliers) if multipliers else 1.0
 
 
 def rank_free_agents(
@@ -466,5 +628,17 @@ def rank_free_agents(
     result["overall_score"] = (
         alpha * result["talent_score"] + (1.0 - alpha) * result["fit_score"]
     )
+
+    # ── Positional need adjustment ────────────────────────────────────────
+    # Penalize FAs at positions where the roster is already stacked. This
+    # prevents "add another catcher when you already have a great one."
+    need_map = _compute_positional_need(my_roster_df, config)
+    if need_map:
+        result["_pos_multiplier"] = result["position"].apply(
+            lambda p: _positional_need_multiplier(p, need_map)
+        )
+        result["overall_score"] = result["overall_score"] * result["_pos_multiplier"]
+        result.drop(columns=["_pos_multiplier"], inplace=True)
+
     result = result.sort_values("overall_score", ascending=False).reset_index(drop=True)
     return result
