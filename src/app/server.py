@@ -1134,7 +1134,7 @@ def _load_transactions() -> pd.DataFrame:
             df: pd.DataFrame = conn.execute(f"""
                 SELECT
                     t.transaction_date,
-                    t.type,
+                    t."type" AS txn_type,
                     t.player_id,
                     COALESCE(p.full_name, t.player_id) AS player_name,
                     COALESCE(p.team, '') AS team,
@@ -2784,13 +2784,13 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         df = transactions_data()
         type_filter = str(input.transaction_type_filter())
         if type_filter != "All":
-            df = df[df["type"] == type_filter]
+            df = df[df["txn_type"] == type_filter]
         if df.empty:
             return ui.p("No transactions found.", style="color:#888;padding:0.5rem;")
         headers = ["Date", "Type", "Player", "Notes"]
         rows_out: list[list[Any]] = []
         for _, r in df.head(50).iterrows():
-            t = str(r.get("type", ""))
+            t = str(r.get("txn_type", ""))
             label, color = _TRANSACTION_TYPE_LABELS.get(t, (t, "#333"))
             player_name = str(r.get("player_name", r.get("player_id", "—")))
             team = str(r.get("team", ""))
