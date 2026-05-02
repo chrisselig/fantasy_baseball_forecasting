@@ -342,7 +342,7 @@ app_ui = ui.page_navbar(
                 "League Transactions",
                 _note(
                     "Recent league transactions: adds, drops, and trades "
-                    "from the past week."
+                    "from the last 3 days, sorted by most recent."
                 ),
                 ui.layout_columns(
                     ui.input_select(

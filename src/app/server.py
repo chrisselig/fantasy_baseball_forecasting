@@ -1123,36 +1123,66 @@ def _color_adv(
     return ui.tags.span(f"{v:.{digits}f}", style=f"color:{color};font-weight:600;")
 
 
+_TRANSACTIONS_COLS = [
+    "transaction_date",
+    "txn_type",
+    "player_id",
+    "player_name",
+    "team",
+    "position",
+    "notes",
+]
+
+
 def _load_transactions() -> pd.DataFrame:
     """Load recent league transactions from MotherDuck.
 
     Joins with dim_players to get player names, teams, and positions for
     display. Returns adds, drops, and trades from the Yahoo league.
     """
+    empty = pd.DataFrame(columns=_TRANSACTIONS_COLS)
     try:
         with managed_connection() as conn:
-            df: pd.DataFrame = conn.execute(f"""
-                SELECT
-                    t.transaction_date,
-                    t."type" AS txn_type,
-                    t.player_id,
-                    COALESCE(p.full_name, t.player_id) AS player_name,
-                    COALESCE(p.team, '') AS team,
-                    COALESCE(
-                        ARRAY_TO_STRING(p.positions, ','),
-                        ''
-                    ) AS position,
-                    t.notes
-                FROM {FACT_TRANSACTIONS} t
-                LEFT JOIN {DIM_PLAYERS} p ON t.player_id = p.player_id
-                ORDER BY t.transaction_date DESC
-                LIMIT 100
-            """).fetchdf()
+            # First try the join query for enriched data
+            try:
+                df: pd.DataFrame = conn.execute(f"""
+                    SELECT
+                        t.transaction_date,
+                        CAST(t.type AS VARCHAR) AS txn_type,
+                        t.player_id,
+                        COALESCE(p.full_name, t.player_id) AS player_name,
+                        COALESCE(p.team, '') AS team,
+                        COALESCE(
+                            ARRAY_TO_STRING(p.positions, ','),
+                            ''
+                        ) AS position,
+                        t.notes
+                    FROM {FACT_TRANSACTIONS} t
+                    LEFT JOIN {DIM_PLAYERS} p ON t.player_id = p.player_id
+                    WHERE t.transaction_date >= CURRENT_DATE - INTERVAL '3 days'
+                    ORDER BY t.transaction_date DESC
+                """).fetchdf()
+            except Exception as inner_exc:
+                logger.warning("Enriched txn query failed, trying raw: %s", inner_exc)
+                # Fall back to raw transactions without the join
+                df = conn.execute(f"""
+                    SELECT
+                        transaction_date,
+                        CAST(type AS VARCHAR) AS txn_type,
+                        player_id,
+                        player_id AS player_name,
+                        '' AS team,
+                        '' AS position,
+                        notes
+                    FROM {FACT_TRANSACTIONS}
+                    WHERE transaction_date >= CURRENT_DATE - INTERVAL '3 days'
+                    ORDER BY transaction_date DESC
+                """).fetchdf()
             if not df.empty:
                 return df
     except (duckdb.Error, Exception) as exc:
         logger.warning("Could not load transactions from DB: %s", exc)
-    return pd.DataFrame()
+    return empty
 
 
 def _load_projections() -> pd.DataFrame:
@@ -2782,8 +2812,10 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     @render.ui
     def transactions_ui() -> Tag:
         df = transactions_data()
+        if df.empty:
+            return ui.p("No transactions found.", style="color:#888;padding:0.5rem;")
         type_filter = str(input.transaction_type_filter())
-        if type_filter != "All":
+        if type_filter != "All" and "txn_type" in df.columns:
             df = df[df["txn_type"] == type_filter]
         if df.empty:
             return ui.p("No transactions found.", style="color:#888;padding:0.5rem;")
