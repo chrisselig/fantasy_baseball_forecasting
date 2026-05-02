@@ -8,7 +8,6 @@ No DB or API calls. Accepts DataFrames, returns dicts/lists.
 from __future__ import annotations
 
 import datetime
-import json
 from typing import Any
 
 import pandas as pd
@@ -299,6 +298,36 @@ def _build_matchup_context(
     return " · ".join(parts)
 
 
+def _rescore_against_drop(
+    fa_row: pd.Series[Any],
+    drop_id: str,
+    my_roster_df: pd.DataFrame,
+    matchup_df: pd.DataFrame,
+    config: LeagueSettings,
+) -> dict[str, object]:
+    """Re-score a free agent against a specific drop candidate.
+
+    When ``recommend_adds`` re-assigns the drop (due to exclusions or
+    positional scarcity), the original score from rank_free_agents is stale.
+    This function calls ``score_free_agent`` with a roster that has the target
+    drop's stats, so the z-score comparison reflects the actual swap.
+    """
+    from src.analysis.waiver_ranker import _compute_category_sigmas, score_free_agent
+
+    sigmas = _compute_category_sigmas(my_roster_df, list(config.scoring_categories))
+
+    # score_free_agent picks its own drop via find_recommended_drop.
+    # We want to force it to compare against drop_id. The simplest approach:
+    # build a 1-row roster containing only the drop player so the scorer
+    # has no choice but to compare against them.
+    drop_rows = my_roster_df[my_roster_df["player_id"].astype(str) == drop_id]
+    if drop_rows.empty:
+        # Fallback: score normally
+        return score_free_agent(fa_row, my_roster_df, matchup_df, config, sigmas=sigmas)
+
+    return score_free_agent(fa_row, drop_rows, matchup_df, config, sigmas=sigmas)
+
+
 def recommend_adds(
     waiver_df: pd.DataFrame,
     my_roster_df: pd.DataFrame,
@@ -342,21 +371,25 @@ def recommend_adds(
     results: list[dict[str, object]] = []
     used_drop_ids: set[str] = set()
 
+    # Status lookup for matchup context per category (stable across all FAs).
+    _status_by_cat: dict[str, str] = {}
+    if not _mdf.empty and "category" in _mdf.columns and "status" in _mdf.columns:
+        for _, mrow in _mdf.iterrows():
+            _status_by_cat[str(mrow["category"])] = str(mrow["status"])
+
     for _, row in waiver_df.iterrows():
         if len(results) >= max_adds:
             break
 
         add_id = str(row.get("player_id", ""))
-        score = float(row.get("overall_score", 0.0))
-        fit_score = float(row.get("fit_score", 0.0))
 
         if not add_id:
             continue
 
         # Re-compute drop recommendation with exclusions so each add gets
         # a unique drop target. This uses the position-aware logic from
-        # waiver_ranker (pitcher↔pitcher, hitter↔hitter enforcement).
-        from src.analysis.waiver_ranker import find_recommended_drop
+        # waiver_ranker (pitcher↔pitcher, hitter↔hitter, scarcity protection).
+        from src.analysis.waiver_ranker import find_recommended_drop, score_free_agent
 
         drop_id = find_recommended_drop(
             row, my_roster_df, config, exclude_ids=used_drop_ids
@@ -367,29 +400,41 @@ def recommend_adds(
         if drop_id in used_drop_ids:
             continue
 
-        # Parse categories_improved from category_scores JSON.
-        # Prefer categories that are flippable/toss-up (bigger weighted_z
-        # values) — take the top contributors by score.
-        categories_improved: list[str] = []
-        cat_scores: dict[str, float] = {}
-        cat_scores_raw = row.get("category_scores", "{}")
-        try:
-            cat_scores = json.loads(str(cat_scores_raw))
-            positive = [(c, v) for c, v in cat_scores.items() if v > 0]
-            positive.sort(key=lambda kv: kv[1], reverse=True)
-            categories_improved = [c for c, _ in positive]
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # ── Re-score the FA against the actual drop candidate ─────────────
+        # The waiver DF score was computed against the original drop before
+        # exclusions. Now that we have the real drop, re-score so the numbers
+        # reflect reality. This is what a GM does: evaluate the actual swap.
+        # Temporarily set recommended_drop_id on the roster to force scoring
+        # against the correct player.
+        rescored = score_free_agent(row, my_roster_df, _mdf, config)
+        # If the drop changed, re-score against the new drop specifically.
+        original_drop = str(rescored.get("recommended_drop_id", ""))
+        if original_drop != drop_id:
+            # Build a mini-roster view to force scoring against the new drop
+            rescored = _rescore_against_drop(row, drop_id, my_roster_df, _mdf, config)
 
-        # Status lookup for matchup context per category.
-        _status_by_cat: dict[str, str] = {}
-        if not _mdf.empty and "category" in _mdf.columns and "status" in _mdf.columns:
-            for _, mrow in _mdf.iterrows():
-                _status_by_cat[str(mrow["category"])] = str(mrow["status"])
+        score = float(rescored.get("overall_score", 0.0))  # type: ignore[arg-type]
+        fit_score = float(rescored.get("fit_score", 0.0))  # type: ignore[arg-type]
+        cat_scores: dict[str, float] = rescored.get("category_scores", {})  # type: ignore[assignment]
+
+        # ── GM quality gate: never recommend a net-negative swap ──────────
+        # If the FA is worse than the drop across the board, skip. A GM
+        # doesn't make a move just to make a move — every transaction costs
+        # one of your limited weekly adds.
+        positive_cats = sum(1 for v in cat_scores.values() if v > 0)
+        negative_cats = sum(1 for v in cat_scores.values() if v < 0)
+        # Only skip if we have enough signal (non-zero cats) AND the swap
+        # is a clear downgrade: no positive categories and at least one negative.
+        if negative_cats > 0 and positive_cats == 0:
+            continue
+
+        # Parse categories improved from the re-scored category_scores.
+        categories_improved: list[str] = []
+        positive = [(c, v) for c, v in cat_scores.items() if v > 0]
+        positive.sort(key=lambda kv: kv[1], reverse=True)
+        categories_improved = [c for c, _ in positive]
 
         # Top contributions (positive and negative) for detailed breakdown.
-        # Rank by absolute z-contribution so the biggest drivers surface
-        # whether they help or hurt the pickup.
         breakdown: list[dict[str, object]] = []
         if cat_scores:
             sorted_cats = sorted(
