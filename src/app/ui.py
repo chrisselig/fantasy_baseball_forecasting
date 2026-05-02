@@ -339,10 +339,10 @@ app_ui = ui.page_navbar(
         "Transactions",
         ui.layout_columns(
             _card(
-                "MLB Transactions",
+                "League Transactions",
                 _note(
-                    "Recent MLB roster moves: injuries, activations, call-ups, and "
-                    "demotions. Only MLB-level transactions shown."
+                    "Recent league transactions: adds, drops, and trades "
+                    "from the past week."
                 ),
                 ui.layout_columns(
                     ui.input_select(
@@ -350,10 +350,9 @@ app_ui = ui.page_navbar(
                         "Transaction Type",
                         choices={
                             "All": "All Types",
-                            "mlb_injury": "🩹 Injuries",
-                            "mlb_activation": "✅ Activations",
-                            "mlb_callup": "⬆ Call-ups",
-                            "mlb_demotion": "⬇ Demotions",
+                            "add": "➕ Adds",
+                            "drop": "➖ Drops",
+                            "trade": "🔄 Trades",
                         },
                         selected="All",
                     ),

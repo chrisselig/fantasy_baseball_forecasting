@@ -367,10 +367,9 @@ def _roster_slot_order(slot: Any) -> int:
 
 
 _TRANSACTION_TYPE_LABELS: dict[str, tuple[str, str]] = {
-    "mlb_injury": ("🩹 Injury", "#c62828"),
-    "mlb_activation": ("✅ Activation", "#2e7d32"),
-    "mlb_callup": ("⬆ Call-up", "#1a7fa1"),
-    "mlb_demotion": ("⬇ Demotion", "#7b5800"),
+    "add": ("➕ Add", "#2e7d32"),
+    "drop": ("➖ Drop", "#c62828"),
+    "trade": ("🔄 Trade", "#1a7fa1"),
 }
 
 
@@ -1125,16 +1124,28 @@ def _color_adv(
 
 
 def _load_transactions() -> pd.DataFrame:
-    """Load recent MLB transactions from MotherDuck."""
+    """Load recent league transactions from MotherDuck.
+
+    Joins with dim_players to get player names, teams, and positions for
+    display. Returns adds, drops, and trades from the Yahoo league.
+    """
     try:
         with managed_connection() as conn:
             df: pd.DataFrame = conn.execute(f"""
-                SELECT transaction_date, type, player_id, notes
-                FROM {FACT_TRANSACTIONS}
-                WHERE type IN (
-                    'mlb_injury','mlb_activation','mlb_callup','mlb_demotion'
-                )
-                ORDER BY transaction_date DESC
+                SELECT
+                    t.transaction_date,
+                    t.type,
+                    t.player_id,
+                    COALESCE(p.full_name, t.player_id) AS player_name,
+                    COALESCE(p.team, '') AS team,
+                    COALESCE(
+                        ARRAY_TO_STRING(p.positions, ','),
+                        ''
+                    ) AS position,
+                    t.notes
+                FROM {FACT_TRANSACTIONS} t
+                LEFT JOIN {DIM_PLAYERS} p ON t.player_id = p.player_id
+                ORDER BY t.transaction_date DESC
                 LIMIT 100
             """).fetchdf()
             if not df.empty:
