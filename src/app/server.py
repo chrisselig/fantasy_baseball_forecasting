@@ -1853,12 +1853,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 if callup_note
                 else ui.tags.span(),
                 # Collapsible "why" panel: per-category contribution breakdown.
-                ui.HTML(
-                    "<details style='margin-top:8px;'>"
-                    "<summary style='cursor:pointer;font-size:0.72rem;color:#7ab8d4;"
-                    "font-weight:700;list-style:none;'>"
-                    "Why this pick? ▾</summary></details>"
-                )
+                # Only render the dropdown when there's actual breakdown data.
+                ui.tags.span()
                 if not breakdown_rows
                 else ui.tags.details(
                     ui.tags.summary(
