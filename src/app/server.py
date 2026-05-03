@@ -1224,13 +1224,13 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
 
             for _, row in rows.iterrows():
                 mid = int(row["mlb_id"])
-                stats_map[mid] = row.to_dict()
+                stats_map[mid] = dict(row.to_dict())  # type: ignore[arg-type]
     except Exception as exc:
         logger.debug("Scout note stats lookup failed: %s", exc)
 
     # Generate scout notes
     for idx in txn_df.index[mask]:
-        mlb_id = int(txn_df.at[idx, "mlb_id"])
+        mlb_id = int(txn_df.at[idx, "mlb_id"])  # type: ignore[arg-type]
         txn_type = str(txn_df.at[idx, "txn_type"])
         pos = str(txn_df.at[idx, "position"])
         name = str(txn_df.at[idx, "full_name"])
