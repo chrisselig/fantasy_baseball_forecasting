@@ -1159,8 +1159,11 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
     """Add scout_note column for call-ups and IL activations.
 
     Cross-references mlb_id with dim_players → fact_player_advanced_stats
-    to generate a 2-3 sentence scouting assessment.
+    to generate a 2-3 sentence scouting assessment. For call-ups, also
+    fetches MiLB stats and player bio (age, draft year, debut).
     """
+    from src.api.mlb_client import get_minor_league_stats, get_player_bio_batch
+
     txn_df = txn_df.copy()
     txn_df["scout_note"] = ""
 
@@ -1170,7 +1173,29 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
     if not target_ids:
         return txn_df
 
-    # Look up stats from MotherDuck
+    # Fetch player bios (age, draft, debut) for call-ups
+    callup_mask = txn_df["txn_type"] == "call_up"
+    callup_ids = txn_df.loc[callup_mask, "mlb_id"].dropna().astype(int).tolist()
+    bio_map: dict[int, dict[str, Any]] = {}
+    milb_map: dict[int, dict[str, Any]] = {}
+    if callup_ids:
+        try:
+            bio_map = get_player_bio_batch(callup_ids)
+        except Exception as exc:
+            logger.debug("Bio batch fetch failed: %s", exc)
+
+        # Fetch MiLB stats for each call-up
+        for mid in callup_ids:
+            try:
+                milb_df = get_minor_league_stats(mid, 2026)
+                if not milb_df.empty:
+                    # Aggregate across levels — take highest level row
+                    top = milb_df.iloc[0]
+                    milb_map[mid] = dict(top.to_dict())  # type: ignore[arg-type]
+            except Exception:
+                pass
+
+    # Look up MLB stats from MotherDuck
     stats_map: dict[int, dict[str, Any]] = {}
     try:
         with managed_connection() as conn:
@@ -1180,10 +1205,8 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
                     p.mlb_id,
                     p.full_name,
                     array_to_string(p.positions, ',') AS positions,
-                    -- Season daily stats (latest date)
                     s.ab, s.h, s.hr, s.sb, s.avg, s.ops,
                     s.ip, s.w, s.k, s.whip, s.sv_h,
-                    -- Advanced Savant
                     a.xwoba, a.barrel_pct, a.hard_hit_pct,
                     a.xera, a.xwoba_against, a.k_bb_pct
                 FROM {DIM_PLAYERS} p
@@ -1196,11 +1219,14 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
                                 ELSE NULL END AS avg,
                            CASE WHEN SUM(ab) > 0
                                 THEN ROUND(
-                                    (SUM(h) + SUM(COALESCE(bb,0)) + SUM(COALESCE(hbp,0)))::DECIMAL
-                                    / (SUM(ab) + SUM(COALESCE(bb,0)) + SUM(COALESCE(hbp,0))
+                                    (SUM(h) + SUM(COALESCE(bb,0))
+                                     + SUM(COALESCE(hbp,0)))::DECIMAL
+                                    / (SUM(ab) + SUM(COALESCE(bb,0))
+                                       + SUM(COALESCE(hbp,0))
                                        + SUM(COALESCE(sf,0)))
                                     + CASE WHEN SUM(ab) > 0
-                                           THEN SUM(COALESCE(tb,0))::DECIMAL / SUM(ab)
+                                           THEN SUM(COALESCE(tb,0))::DECIMAL
+                                                / SUM(ab)
                                            ELSE 0 END, 3)
                                 ELSE NULL END AS ops,
                            SUM(COALESCE(ip, 0)) AS ip,
@@ -1212,7 +1238,8 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
                                      + SUM(COALESCE(hits_allowed,0)))::DECIMAL
                                     / SUM(ip), 3)
                                 ELSE NULL END AS whip,
-                           SUM(COALESCE(sv,0)) + SUM(COALESCE(holds,0)) AS sv_h
+                           SUM(COALESCE(sv,0))
+                           + SUM(COALESCE(holds,0)) AS sv_h
                     FROM {FACT_PLAYER_STATS_DAILY}
                     WHERE stat_date >= '2026-01-01'
                     GROUP BY player_id
@@ -1236,7 +1263,9 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
         name = str(txn_df.at[idx, "full_name"])
 
         stats = stats_map.get(mlb_id)
-        note = _generate_scout_note(name, pos, txn_type, stats)
+        bio = bio_map.get(mlb_id)
+        milb = milb_map.get(mlb_id)
+        note = _generate_scout_note(name, pos, txn_type, stats, bio, milb)
         txn_df.at[idx, "scout_note"] = note
 
     return txn_df
@@ -1247,22 +1276,116 @@ def _generate_scout_note(
     position: str,
     txn_type: str,
     stats: dict[str, Any] | None,
+    bio: dict[str, Any] | None = None,
+    milb: dict[str, Any] | None = None,
 ) -> str:
     """Generate a 2-3 sentence scout report for a transaction player."""
     is_pitcher = position in ("P", "SP", "RP", "LHP", "RHP")
 
-    if stats is None or (stats.get("ab") in (None, 0) and stats.get("ip") in (None, 0)):
-        # No stats available
-        if txn_type == "call_up":
-            if is_pitcher:
-                return "Fresh arm from the minors with no MLB track record yet. Monitor usage pattern before adding."
-            return "Prospect getting first MLB opportunity. Speculative add only in deeper leagues."
-        # IL activation with no stats
+    has_mlb_stats = stats is not None and (
+        stats.get("ab") not in (None, 0) or stats.get("ip") not in (None, 0)
+    )
+
+    if txn_type == "call_up" and not has_mlb_stats:
+        # Call-up with no MLB track record — use bio + MiLB stats
+        return _callup_scout_note(position, is_pitcher, bio, milb)
+
+    if not has_mlb_stats:
         return "Returning from IL with no 2026 stats on file. Check rehab results before rostering."
 
     if is_pitcher:
-        return _pitcher_scout_note(txn_type, stats)
-    return _hitter_scout_note(txn_type, stats)
+        return _pitcher_scout_note(txn_type, stats)  # type: ignore[arg-type]
+    return _hitter_scout_note(txn_type, stats)  # type: ignore[arg-type]
+
+
+def _callup_scout_note(
+    position: str,
+    is_pitcher: bool,
+    bio: dict[str, Any] | None,
+    milb: dict[str, Any] | None,
+) -> str:
+    """Scout note for a call-up using bio and MiLB stats."""
+    parts: list[str] = []
+
+    # Bio context: age, debut status
+    age = bio.get("age") if bio else None
+    debut = bio.get("debut_date") if bio else None
+
+    import datetime as _dt
+
+    is_debut = debut is None or str(debut) >= str(_dt.date.today())
+    if age and is_debut:
+        parts.append(f"MLB debut at {age} years old.")
+    elif age:
+        parts.append(f"Age-{age} return to the bigs.")
+    else:
+        parts.append("Call-up from minors.")
+
+    # MiLB performance
+    if milb:
+        level = str(milb.get("level", ""))
+        if is_pitcher:
+            m_ip = float(milb.get("ip") or 0)
+            m_era = milb.get("era")
+            m_whip = milb.get("whip")
+            m_k = int(milb.get("k") or 0)
+            bits: list[str] = []
+            if level:
+                bits.append(f"{level}:")
+            if m_ip > 0:
+                k9 = round(m_k / m_ip * 9, 1)
+                bits.append(f"{m_ip:.0f} IP, {k9} K/9")
+            if m_era is not None:
+                bits.append(f"{float(m_era):.2f} ERA")
+            if m_whip is not None:
+                bits.append(f"{float(m_whip):.2f} WHIP")
+            if bits:
+                parts.append(f"MiLB: {' '.join(bits)}.")
+        else:
+            m_avg = milb.get("avg")
+            m_ops = milb.get("ops")
+            m_hr = int(milb.get("hr") or 0)
+            m_sb = int(milb.get("sb") or 0)
+            bits = []
+            if level:
+                bits.append(f"{level}:")
+            if m_avg is not None:
+                bits.append(f"{m_avg}")
+            if m_ops is not None:
+                bits.append(f"{m_ops} OPS")
+            if m_hr > 0 or m_sb > 0:
+                bits.append(f"{m_hr} HR/{m_sb} SB")
+            if bits:
+                parts.append(f"MiLB: {' '.join(bits)}.")
+    elif not parts:
+        # No bio, no milb
+        if is_pitcher:
+            return (
+                "Fresh arm from the minors with no MLB track record. "
+                "Monitor usage pattern before adding."
+            )
+        return "Prospect getting first MLB opportunity. Speculative add only in deeper leagues."
+
+    # Verdict
+    if milb and is_pitcher:
+        m_era = float(milb.get("era") or 99)
+        m_whip = float(milb.get("whip") or 99)
+        if m_era <= 3.00 and m_whip <= 1.15:
+            parts.append("Dominant minor league numbers — high-priority pickup.")
+        elif m_era <= 4.00:
+            parts.append("Solid MiLB ratios; worth a speculative add.")
+        else:
+            parts.append("Fringe numbers; stream only if desperate for innings.")
+    elif milb and not is_pitcher:
+        m_ops_val = float(milb.get("ops") or 0)
+        if m_ops_val >= 0.900:
+            parts.append("Mashing in the minors — priority add in all formats.")
+        elif m_ops_val >= 0.750:
+            parts.append("Productive MiLB bat; worth a roster flier.")
+        else:
+            parts.append("Light bat at upper levels; deep-league only.")
+
+    return " ".join(parts[:3])
 
 
 def _hitter_scout_note(txn_type: str, stats: dict[str, Any]) -> str:

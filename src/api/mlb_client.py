@@ -386,6 +386,40 @@ def get_mlb_transactions(days: int = 3) -> pd.DataFrame:
     return df
 
 
+def get_player_bio_batch(mlb_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Fetch age, draft year, and MLB debut date for multiple players.
+
+    Source: GET /people?personIds=id1,id2,...
+
+    Returns:
+        Dict keyed by mlb_id with values containing age, draft_year, debut_date.
+    """
+    if not mlb_ids:
+        return {}
+    id_str = ",".join(str(x) for x in mlb_ids)
+    url = f"{_PEOPLE_URL}?personIds={id_str}"
+    try:
+        data = _mlb_get(url)
+    except Exception as exc:
+        logger.warning("Batch player bio fetch failed: %s", exc)
+        return {}
+
+    result: dict[int, dict[str, Any]] = {}
+    for person in data.get("people", []):
+        pid = person.get("id")
+        if pid is None:
+            continue
+        result[int(pid)] = {
+            "age": person.get("currentAge"),
+            "draft_year": person.get("draftYear"),
+            "debut_date": person.get("mlbDebutDate"),
+            "primary_position": person.get("primaryPosition", {}).get(
+                "abbreviation", ""
+            ),
+        }
+    return result
+
+
 def get_player_info(mlb_id: int) -> dict[str, Any]:
     """Fetch player metadata from MLB Stats API people endpoint.
 
