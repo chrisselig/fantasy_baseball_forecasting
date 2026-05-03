@@ -351,8 +351,9 @@ app_ui = ui.page_navbar(
                         choices={
                             "All": "All Types",
                             "call_up": "⬆ Call-Ups",
+                            "il_activation": "✅ IL Activated",
+                            "il_placement": "🏥 Placed on IL",
                             "demotion": "⬇ Demotions",
-                            "status_change": "🏥 IL / Status",
                             "dfa": "✂️ DFA",
                             "released": "🚫 Released",
                         },

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 import warnings
 from typing import Any
 
@@ -219,6 +220,23 @@ def _empty_df(columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=columns)
 
 
+_POSITION_PATTERN = re.compile(
+    r"\b(RHP|LHP|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|DH|IF|P)\b"
+)
+
+
+def _parse_position_from_description(description: str) -> str:
+    """Extract position abbreviation from transaction description text."""
+    match = _POSITION_PATTERN.search(description)
+    if match:
+        pos = match.group(1)
+        # Normalize handedness to generic position
+        if pos in ("RHP", "LHP"):
+            return "P"
+        return pos
+    return ""
+
+
 # ── MLB Stats API functions ───────────────────────────────────────────────────
 
 
@@ -327,7 +345,11 @@ def get_mlb_transactions(days: int = 3) -> pd.DataFrame:
             continue
 
         to_team = txn.get("toTeam", txn.get("fromTeam", {}))
+        description = txn.get("description", txn.get("note", ""))
+
         position = person.get("primaryPosition", {}).get("abbreviation", "")
+        if not position:
+            position = _parse_position_from_description(description)
 
         raw_date = txn.get("date", txn.get("effectiveDate", ""))
         try:
@@ -335,7 +357,14 @@ def get_mlb_transactions(days: int = 3) -> pd.DataFrame:
         except (ValueError, IndexError):
             txn_date = None
 
-        description = txn.get("description", txn.get("note", ""))
+        # Disambiguate IL placement vs activation for status_change (SC)
+        txn_type = _MLB_TXN_TYPE_MAP[type_code]
+        if type_code == "SC":
+            desc_lower = description.lower()
+            if "activated" in desc_lower or "reinstated" in desc_lower:
+                txn_type = "il_activation"
+            elif "placed" in desc_lower or "transferred" in desc_lower:
+                txn_type = "il_placement"
 
         rows.append(
             {
@@ -343,7 +372,7 @@ def get_mlb_transactions(days: int = 3) -> pd.DataFrame:
                 "full_name": person.get("fullName", ""),
                 "team": to_team.get("abbreviation", to_team.get("name", "")),
                 "position": position,
-                "txn_type": _MLB_TXN_TYPE_MAP[type_code],
+                "txn_type": txn_type,
                 "transaction_date": txn_date,
                 "description": description,
             }

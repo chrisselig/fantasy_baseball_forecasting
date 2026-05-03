@@ -367,8 +367,10 @@ def _roster_slot_order(slot: Any) -> int:
 
 _TRANSACTION_TYPE_LABELS: dict[str, tuple[str, str]] = {
     "call_up": ("⬆ Call-Up", "#2e7d32"),
+    "il_activation": ("✅ IL Activated", "#1a7fa1"),
+    "il_placement": ("🏥 Placed on IL", "#e65100"),
     "demotion": ("⬇ Demotion", "#c62828"),
-    "status_change": ("🏥 IL / Status", "#e65100"),
+    "status_change": ("🔄 Status Change", "#555555"),
     "dfa": ("✂️ DFA", "#6a1b9a"),
     "released": ("🚫 Released", "#333333"),
 }
@@ -1139,16 +1141,227 @@ def _load_transactions() -> pd.DataFrame:
     """Fetch recent MLB transactions (call-ups, demotions, IL moves, DFAs, releases).
 
     Calls the MLB Stats API directly via mlb_client.get_mlb_transactions().
+    Enriches call-ups and IL activations with a brief scout report.
     """
     from src.api.mlb_client import get_mlb_transactions
 
     try:
         df = get_mlb_transactions(days=3)
         if not df.empty:
+            df = _enrich_scout_notes(df)
             return df
     except Exception as exc:
         logger.warning("Could not fetch MLB transactions: %s", exc)
-    return pd.DataFrame(columns=_TRANSACTIONS_COLS)
+    return pd.DataFrame(columns=_TRANSACTIONS_COLS + ["scout_note"])
+
+
+def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
+    """Add scout_note column for call-ups and IL activations.
+
+    Cross-references mlb_id with dim_players → fact_player_advanced_stats
+    to generate a 2-3 sentence scouting assessment.
+    """
+    txn_df = txn_df.copy()
+    txn_df["scout_note"] = ""
+
+    # Only scout call-ups and IL activations
+    mask = txn_df["txn_type"].isin(["call_up", "il_activation"])
+    target_ids = txn_df.loc[mask, "mlb_id"].dropna().astype(int).tolist()
+    if not target_ids:
+        return txn_df
+
+    # Look up stats from MotherDuck
+    stats_map: dict[int, dict[str, Any]] = {}
+    try:
+        with managed_connection() as conn:
+            placeholders = ",".join(str(int(x)) for x in target_ids)
+            rows = conn.execute(f"""
+                SELECT
+                    p.mlb_id,
+                    p.full_name,
+                    array_to_string(p.positions, ',') AS positions,
+                    -- Season daily stats (latest date)
+                    s.ab, s.h, s.hr, s.sb, s.avg, s.ops,
+                    s.ip, s.w, s.k, s.whip, s.sv_h,
+                    -- Advanced Savant
+                    a.xwoba, a.barrel_pct, a.hard_hit_pct,
+                    a.xera, a.xwoba_against, a.k_bb_pct
+                FROM {DIM_PLAYERS} p
+                LEFT JOIN (
+                    SELECT player_id,
+                           SUM(ab) AS ab, SUM(h) AS h, SUM(hr) AS hr,
+                           SUM(sb) AS sb,
+                           CASE WHEN SUM(ab) > 0
+                                THEN ROUND(SUM(h)::DECIMAL / SUM(ab), 3)
+                                ELSE NULL END AS avg,
+                           CASE WHEN SUM(ab) > 0
+                                THEN ROUND(
+                                    (SUM(h) + SUM(COALESCE(bb,0)) + SUM(COALESCE(hbp,0)))::DECIMAL
+                                    / (SUM(ab) + SUM(COALESCE(bb,0)) + SUM(COALESCE(hbp,0))
+                                       + SUM(COALESCE(sf,0)))
+                                    + CASE WHEN SUM(ab) > 0
+                                           THEN SUM(COALESCE(tb,0))::DECIMAL / SUM(ab)
+                                           ELSE 0 END, 3)
+                                ELSE NULL END AS ops,
+                           SUM(COALESCE(ip, 0)) AS ip,
+                           SUM(COALESCE(w, 0)) AS w,
+                           SUM(COALESCE(k, 0)) AS k,
+                           CASE WHEN SUM(COALESCE(ip,0)) > 0
+                                THEN ROUND(
+                                    (SUM(COALESCE(walks_allowed,0))
+                                     + SUM(COALESCE(hits_allowed,0)))::DECIMAL
+                                    / SUM(ip), 3)
+                                ELSE NULL END AS whip,
+                           SUM(COALESCE(sv,0)) + SUM(COALESCE(holds,0)) AS sv_h
+                    FROM {FACT_PLAYER_STATS_DAILY}
+                    WHERE stat_date >= '2026-01-01'
+                    GROUP BY player_id
+                ) s ON s.player_id = p.player_id
+                LEFT JOIN {FACT_PLAYER_ADVANCED_STATS} a
+                    ON a.player_id = p.player_id AND a.season = 2026
+                WHERE p.mlb_id IN ({placeholders})
+            """).fetchdf()
+
+            for _, row in rows.iterrows():
+                mid = int(row["mlb_id"])
+                stats_map[mid] = row.to_dict()
+    except Exception as exc:
+        logger.debug("Scout note stats lookup failed: %s", exc)
+
+    # Generate scout notes
+    for idx in txn_df.index[mask]:
+        mlb_id = int(txn_df.at[idx, "mlb_id"])
+        txn_type = str(txn_df.at[idx, "txn_type"])
+        pos = str(txn_df.at[idx, "position"])
+        name = str(txn_df.at[idx, "full_name"])
+
+        stats = stats_map.get(mlb_id)
+        note = _generate_scout_note(name, pos, txn_type, stats)
+        txn_df.at[idx, "scout_note"] = note
+
+    return txn_df
+
+
+def _generate_scout_note(
+    name: str,
+    position: str,
+    txn_type: str,
+    stats: dict[str, Any] | None,
+) -> str:
+    """Generate a 2-3 sentence scout report for a transaction player."""
+    is_pitcher = position in ("P", "SP", "RP", "LHP", "RHP")
+
+    if stats is None or (stats.get("ab") in (None, 0) and stats.get("ip") in (None, 0)):
+        # No stats available
+        if txn_type == "call_up":
+            if is_pitcher:
+                return "Fresh arm from the minors with no MLB track record yet. Monitor usage pattern before adding."
+            return "Prospect getting first MLB opportunity. Speculative add only in deeper leagues."
+        # IL activation with no stats
+        return "Returning from IL with no 2026 stats on file. Check rehab results before rostering."
+
+    if is_pitcher:
+        return _pitcher_scout_note(txn_type, stats)
+    return _hitter_scout_note(txn_type, stats)
+
+
+def _hitter_scout_note(txn_type: str, stats: dict[str, Any]) -> str:
+    """Scout note for a hitter based on available stats."""
+    parts: list[str] = []
+    avg = stats.get("avg")
+    ops = stats.get("ops")
+    hr = stats.get("hr", 0) or 0
+    sb = stats.get("sb", 0) or 0
+    xwoba = stats.get("xwoba")
+    barrel = stats.get("barrel_pct")
+    hard_hit = stats.get("hard_hit_pct")
+
+    # Opener: context on transaction type
+    if txn_type == "call_up":
+        parts.append("Call-up worth monitoring.")
+    else:
+        parts.append("Back from IL and ready to contribute.")
+
+    # Performance summary
+    perf_bits: list[str] = []
+    if avg is not None and float(avg) > 0:
+        perf_bits.append(f".{int(float(avg)*1000):03d}")
+    if ops is not None and float(ops) > 0:
+        perf_bits.append(f"{float(ops):.3f} OPS")
+    if hr > 0 or sb > 0:
+        perf_bits.append(f"{int(hr)} HR/{int(sb)} SB")
+    if perf_bits:
+        parts.append(f"Season line: {', '.join(perf_bits)}.")
+
+    # Savant quality assessment
+    quality_flags: list[str] = []
+    if xwoba is not None and float(xwoba) >= 0.340:
+        quality_flags.append("elite xwOBA")
+    elif xwoba is not None and float(xwoba) >= 0.320:
+        quality_flags.append("solid xwOBA")
+    if barrel is not None and float(barrel) >= 10:
+        quality_flags.append("high barrel rate")
+    if hard_hit is not None and float(hard_hit) >= 45:
+        quality_flags.append("premium exit velos")
+
+    if quality_flags:
+        parts.append(f"Savant flags: {', '.join(quality_flags)} — roster-worthy bat.")
+    elif xwoba is not None and float(xwoba) < 0.290:
+        parts.append("Below-average quality of contact. Pass unless desperate for position fill.")
+    else:
+        parts.append("Moderate upside; stream if position-needy.")
+
+    return " ".join(parts[:3])
+
+
+def _pitcher_scout_note(txn_type: str, stats: dict[str, Any]) -> str:
+    """Scout note for a pitcher based on available stats."""
+    parts: list[str] = []
+    ip = float(stats.get("ip") or 0)
+    whip = stats.get("whip")
+    k = int(stats.get("k") or 0)
+    xera = stats.get("xera")
+    xwoba_ag = stats.get("xwoba_against")
+    k_bb_pct = stats.get("k_bb_pct")
+    sv_h = int(stats.get("sv_h") or 0)
+
+    # Opener
+    if txn_type == "call_up":
+        parts.append("Arm called up from minors.")
+    else:
+        parts.append("Returning from IL — slot back in if ratios are intact.")
+
+    # Workload + ratios
+    perf_bits: list[str] = []
+    if ip > 0:
+        k_per_9 = round(k / ip * 9, 1) if ip > 0 else 0
+        perf_bits.append(f"{ip:.0f} IP, {k_per_9} K/9")
+    if whip is not None and float(whip) > 0:
+        perf_bits.append(f"{float(whip):.2f} WHIP")
+    if sv_h > 0:
+        perf_bits.append(f"{sv_h} SV+H")
+    if perf_bits:
+        parts.append(f"Season: {', '.join(perf_bits)}.")
+
+    # Quality flags
+    quality_flags: list[str] = []
+    if xera is not None and float(xera) <= 3.20:
+        quality_flags.append("elite xERA")
+    elif xera is not None and float(xera) <= 3.80:
+        quality_flags.append("solid xERA")
+    if k_bb_pct is not None and float(k_bb_pct) >= 20:
+        quality_flags.append("strong K-BB%")
+    if xwoba_ag is not None and float(xwoba_ag) <= 0.290:
+        quality_flags.append("suppresses hard contact")
+
+    if quality_flags:
+        parts.append(f"Savant: {', '.join(quality_flags)}. Prioritize pickup.")
+    elif xera is not None and float(xera) > 4.50:
+        parts.append("Underlying metrics are poor. Avoid unless streaming for W/K volume.")
+    else:
+        parts.append("Serviceable arm; consider streaming if ratios are stable.")
+
+    return " ".join(parts[:3])
 
 
 def _load_projections() -> pd.DataFrame:
@@ -2785,7 +2998,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             df = df[df["txn_type"] == type_filter]
         if df.empty:
             return ui.p("No transactions found.", style="color:#888;padding:0.5rem;")
-        headers = ["Date", "Type", "Player", "Description"]
+        headers = ["Date", "Type", "Player", "Pos", "Scout Report"]
         rows_out: list[list[Any]] = []
         for _, r in df.head(50).iterrows():
             t = str(r.get("txn_type", ""))
@@ -2793,6 +3006,13 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             player_name = str(r.get("full_name", r.get("player_name", "—")))
             team = str(r.get("team", ""))
             pos = str(r.get("position", ""))
+            scout_note = str(r.get("scout_note", ""))
+
+            # For rows without scout notes, show the description instead
+            note_display = scout_note if scout_note else str(
+                r.get("description", "")
+            )
+
             rows_out.append(
                 [
                     str(r.get("transaction_date", "—"))[:10],
@@ -2803,13 +3023,17 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                     ui.tags.span(
                         player_name,
                         ui.tags.span(
-                            f" {team} · {pos}" if team and pos else "",
+                            f" ({team})" if team else "",
                             style="color:#4a6282;font-size:0.75rem;",
                         ),
                     ),
                     ui.tags.span(
-                        str(r.get("description", r.get("notes", ""))),
-                        style="font-size:0.75rem;color:#4a6282;",
+                        pos,
+                        style="font-weight:600;font-size:0.78rem;",
+                    ),
+                    ui.tags.span(
+                        note_display,
+                        style="font-size:0.73rem;color:#2a3f5f;font-style:italic;",
                     ),
                 ]
             )
