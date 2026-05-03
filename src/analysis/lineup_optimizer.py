@@ -586,6 +586,206 @@ def recommend_adds(
     return results
 
 
+# ── Category groups for trade evaluation ──────────────────────────────────────
+_BATTING_CATS = {"H", "HR", "SB", "BB", "AVG", "OPS", "FPCT"}
+_PITCHING_CATS = {"W", "K", "WHIP", "K/BB", "SV+H"}
+_COUNTING_CATS = {"H", "HR", "SB", "BB", "W", "K", "SV+H"}
+_RATE_CATS = {"AVG", "OPS", "FPCT", "WHIP", "K/BB"}
+# Lower-is-better categories
+_LOWER_WINS = {"WHIP"}
+
+
+def generate_trade_proposals(
+    matchup_summary: list[dict[str, object]],
+    my_roster_df: pd.DataFrame,
+    league_rosters: dict[str, pd.DataFrame],
+    team_names: dict[str, str],
+    my_team_key: str,
+    limit: int = 5,
+) -> list[dict[str, object]]:
+    """Generate realistic 1-for-1 trade proposals based on category needs.
+
+    Identifies categories where I'm weak and categories where I'm strong,
+    then finds players on other teams who fill my gaps while offering a
+    player the trade partner needs.
+
+    Args:
+        matchup_summary: List of category dicts from score_categories.
+        my_roster_df: My roster with player_id, full_name, team, position,
+                      and per-game stat columns.
+        league_rosters: Dict of team_key → roster DataFrame for all other teams.
+                        Same schema as my_roster_df.
+        team_names: Dict of team_key → fantasy team name.
+        my_team_key: My team key (for exclusion).
+        limit: Max number of proposals to return.
+
+    Returns:
+        List of trade proposal dicts matching the Shiny UI schema.
+    """
+    if not matchup_summary or my_roster_df.empty:
+        return []
+
+    # 1. Identify my weak and strong categories
+    weak_cats: list[str] = []
+    strong_cats: list[str] = []
+    for cat in matchup_summary:
+        status = str(cat.get("status", ""))
+        name = str(cat.get("category", "")).upper()
+        wp = float(cat.get("win_prob", 0.5))  # type: ignore[arg-type]
+        if status in ("safe_loss", "trailing") or wp < 0.35:
+            weak_cats.append(name)
+        elif status in ("safe_win",) or wp >= 0.70:
+            strong_cats.append(name)
+
+    if not weak_cats:
+        return []
+
+    # 2. Score each of my players by how much they contribute to strong cats
+    my_tradeable = _score_players_by_categories(my_roster_df, strong_cats)
+
+    # 3. For each other team, score their players by how much they help my weak cats
+    proposals: list[dict[str, object]] = []
+    for opp_key, opp_roster in league_rosters.items():
+        if opp_key == my_team_key or opp_roster.empty:
+            continue
+        opp_name = team_names.get(opp_key, opp_key)
+        opp_targets = _score_players_by_categories(opp_roster, weak_cats)
+
+        # 4. Find best swaps: I give a strong-cat player, I get a weak-cat player
+        for _, target in opp_targets.head(3).iterrows():
+            target_is_pitcher = _position_is_pitcher(str(target.get("position", "")))
+            target_helps = _player_top_categories(target, weak_cats)
+            if not target_helps:
+                continue
+
+            # Find my best trade chip of the same type (hitter↔hitter, pitcher↔pitcher)
+            for _, chip in my_tradeable.iterrows():
+                chip_is_pitcher = _position_is_pitcher(str(chip.get("position", "")))
+                if chip_is_pitcher != target_is_pitcher:
+                    continue
+
+                chip_helps = _player_top_categories(chip, strong_cats)
+                if not chip_helps:
+                    continue
+
+                # Estimate fairness — compare overall value
+                my_score = float(chip.get("trade_score", 0))
+                their_score = float(target.get("trade_score", 0))
+                if my_score == 0 and their_score == 0:
+                    continue
+
+                ratio = (
+                    min(my_score, their_score) / max(my_score, their_score)
+                    if max(my_score, their_score) > 0
+                    else 0
+                )
+                acceptance = int(min(85, max(20, ratio * 80 + 10)))
+
+                # Build the net category gain description
+                net_gain_parts = [f"+{c}" for c in target_helps[:3]]
+                net_loss_parts = [f"-{c}" for c in chip_helps[:2]]
+                net_gain = ", ".join(net_gain_parts + net_loss_parts)
+
+                rationale = (
+                    f"You're safely winning {', '.join(chip_helps[:2])} but "
+                    f"losing {', '.join(target_helps[:2])}. "
+                    f"Swap surplus production for what you need."
+                )
+
+                proposals.append(
+                    {
+                        "give_player": str(chip.get("full_name", "")),
+                        "give_team": opp_name,
+                        "give_helps": chip_helps,
+                        "receive_player": str(target.get("full_name", "")),
+                        "receive_team": opp_name,
+                        "receive_helps": target_helps,
+                        "my_category_gain": net_gain,
+                        "rationale": rationale,
+                        "acceptance_pct": acceptance,
+                    }
+                )
+                break  # One proposal per target player
+
+    # Sort by acceptance likelihood descending, take top N
+    proposals.sort(
+        key=lambda p: int(p.get("acceptance_pct", 0)),  # type: ignore[call-overload]
+        reverse=True,
+    )
+    return proposals[:limit]
+
+
+def _score_players_by_categories(
+    roster_df: pd.DataFrame,
+    categories: list[str],
+) -> pd.DataFrame:
+    """Score each player by their contribution to the given categories.
+
+    Returns a copy of roster_df with a 'trade_score' column, sorted desc.
+    """
+    df = roster_df.copy()
+    # Map category names to stat columns
+    cat_to_col: dict[str, str] = {
+        "H": "h_pg",
+        "HR": "hr_pg",
+        "SB": "sb_pg",
+        "BB": "bb_pg",
+        "AVG": "avg",
+        "OPS": "ops",
+        "FPCT": "fpct",
+        "W": "w_pg",
+        "K": "k_pg",
+        "WHIP": "whip",
+        "K/BB": "k_bb",
+        "SV+H": "sv_h_pg",
+    }
+    score = pd.Series(0.0, index=df.index)
+    for cat in categories:
+        col = cat_to_col.get(cat, "")
+        if col and col in df.columns:
+            vals = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            if cat in _LOWER_WINS:
+                # For WHIP, lower is better — invert so high score = good
+                vals = -vals
+            score += vals
+
+    df["trade_score"] = score
+    return df.sort_values("trade_score", ascending=False).reset_index(drop=True)
+
+
+def _player_top_categories(
+    player: pd.Series,
+    target_cats: list[str],
+    top_n: int = 3,
+) -> list[str]:
+    """Return the top N categories where this player contributes most."""
+    cat_to_col: dict[str, str] = {
+        "H": "h_pg",
+        "HR": "hr_pg",
+        "SB": "sb_pg",
+        "BB": "bb_pg",
+        "AVG": "avg",
+        "OPS": "ops",
+        "FPCT": "fpct",
+        "W": "w_pg",
+        "K": "k_pg",
+        "WHIP": "whip",
+        "K/BB": "k_bb",
+        "SV+H": "sv_h_pg",
+    }
+    scored: list[tuple[str, float]] = []
+    for cat in target_cats:
+        col = cat_to_col.get(cat, "")
+        if col:
+            val = float(player.get(col, 0) or 0)
+            if cat in _LOWER_WINS:
+                val = -val  # Lower WHIP is better
+            if val > 0:
+                scored.append((cat, val))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [c for c, _ in scored[:top_n]]
+
+
 def build_daily_report(
     lineup: dict[str, str],
     adds: list[dict[str, object]],
@@ -595,6 +795,7 @@ def build_daily_report(
     report_date: datetime.date | None = None,
     week_number: int = 1,
     waiver_rankings: list[dict[str, object]] | None = None,
+    trades: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Build the JSON-serializable daily report consumed by the Shiny app.
 
@@ -663,4 +864,5 @@ def build_daily_report(
         },
         "callup_alerts": callup_alerts,
         "waiver_rankings": waiver_rankings or [],
+        "trades": trades or [],
     }
