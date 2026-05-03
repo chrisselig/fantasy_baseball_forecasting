@@ -1285,7 +1285,7 @@ def _hitter_scout_note(txn_type: str, stats: dict[str, Any]) -> str:
     # Performance summary
     perf_bits: list[str] = []
     if avg is not None and float(avg) > 0:
-        perf_bits.append(f".{int(float(avg)*1000):03d}")
+        perf_bits.append(f".{int(float(avg) * 1000):03d}")
     if ops is not None and float(ops) > 0:
         perf_bits.append(f"{float(ops):.3f} OPS")
     if hr > 0 or sb > 0:
@@ -1307,7 +1307,9 @@ def _hitter_scout_note(txn_type: str, stats: dict[str, Any]) -> str:
     if quality_flags:
         parts.append(f"Savant flags: {', '.join(quality_flags)} — roster-worthy bat.")
     elif xwoba is not None and float(xwoba) < 0.290:
-        parts.append("Below-average quality of contact. Pass unless desperate for position fill.")
+        parts.append(
+            "Below-average quality of contact. Pass unless desperate for position fill."
+        )
     else:
         parts.append("Moderate upside; stream if position-needy.")
 
@@ -1357,7 +1359,9 @@ def _pitcher_scout_note(txn_type: str, stats: dict[str, Any]) -> str:
     if quality_flags:
         parts.append(f"Savant: {', '.join(quality_flags)}. Prioritize pickup.")
     elif xera is not None and float(xera) > 4.50:
-        parts.append("Underlying metrics are poor. Avoid unless streaming for W/K volume.")
+        parts.append(
+            "Underlying metrics are poor. Avoid unless streaming for W/K volume."
+        )
     else:
         parts.append("Serviceable arm; consider streaming if ratios are stable.")
 
@@ -3009,9 +3013,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             scout_note = str(r.get("scout_note", ""))
 
             # For rows without scout notes, show the description instead
-            note_display = scout_note if scout_note else str(
-                r.get("description", "")
-            )
+            note_display = scout_note if scout_note else str(r.get("description", ""))
 
             rows_out.append(
                 [
