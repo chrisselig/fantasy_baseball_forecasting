@@ -401,6 +401,7 @@ def load_projections(
         "proj_fpct",
         "proj_whip",  # LOWEST WINS
         "proj_k_bb",
+        "games_per_day",
         "games_remaining",
         "source",
     ]
