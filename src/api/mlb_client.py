@@ -220,9 +220,7 @@ def _empty_df(columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=columns)
 
 
-_POSITION_PATTERN = re.compile(
-    r"\b(RHP|LHP|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|DH|IF|P)\b"
-)
+_POSITION_PATTERN = re.compile(r"\b(RHP|LHP|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|DH|IF|P)\b")
 
 
 def _parse_position_from_description(description: str) -> str:
