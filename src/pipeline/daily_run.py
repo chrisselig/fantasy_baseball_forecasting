@@ -38,6 +38,7 @@ import pandas as pd
 
 from src.analysis.lineup_optimizer import (
     build_daily_report,
+    generate_trade_proposals,
     optimize_daily_lineup,
     recommend_adds,
 )
@@ -636,7 +637,19 @@ def _step_run_analysis(
         matchup_df=matchup_df,
     )
 
-    # ── 11. Build daily report ────────────────────────────────────────────────
+    # ── 11. Generate trade proposals ──────────────────────────────────────────
+    trade_proposals = _generate_trades(
+        conn,
+        matchup_df,
+        my_roster_enriched,
+        team_key,
+        today,
+        week,
+        season,
+        rates_df,
+    )
+
+    # ── 12. Build daily report ────────────────────────────────────────────────
     waiver_rankings = _serialize_waiver_rankings(ranked_fa_df)
     report = build_daily_report(
         lineup=lineup,
@@ -647,9 +660,107 @@ def _step_run_analysis(
         report_date=today,
         week_number=week,
         waiver_rankings=waiver_rankings,
+        trades=trade_proposals,
     )
 
     return report
+
+
+def _generate_trades(
+    conn: duckdb.DuckDBPyConnection,
+    matchup_df: pd.DataFrame,
+    my_roster_enriched: pd.DataFrame,
+    my_team_key: str,
+    today: datetime.date,
+    week: int,
+    season: int,
+    rates_df: pd.DataFrame,
+) -> list[dict[str, object]]:
+    """Generate trade proposals by comparing my roster against league rosters.
+
+    Queries all other teams' rosters, enriches them with per-game stats,
+    and runs the trade proposal generator.
+    """
+    # Build matchup summary from matchup_df
+    matchup_summary: list[dict[str, object]] = []
+    if not matchup_df.empty:
+        for _, row in matchup_df.iterrows():
+            matchup_summary.append(
+                {
+                    "category": str(row.get("category", "")),
+                    "win_prob": float(row.get("win_prob", 0.5)),
+                    "status": str(row.get("status", "")),
+                }
+            )
+
+    try:
+        # Get all team rosters from DB
+        snap_row = conn.execute(
+            f"SELECT MAX(snapshot_date) FROM {FACT_ROSTERS}"
+        ).fetchone()
+        if not snap_row or not snap_row[0]:
+            return []
+        latest_snap = snap_row[0]
+
+        all_rosters_raw: pd.DataFrame = conn.execute(
+            f"""
+            SELECT r.team_id, r.player_id, r.roster_slot,
+                   p.full_name, p.team,
+                   array_to_string(p.positions, ',') AS position
+            FROM {FACT_ROSTERS} r
+            JOIN {DIM_PLAYERS} p ON r.player_id = p.player_id
+            WHERE r.snapshot_date = ?
+              AND r.team_id != ?
+              AND r.roster_slot NOT IN ('IL', 'IL+', 'NA')
+            """,
+            [latest_snap, my_team_key],
+        ).fetchdf()
+
+        if all_rosters_raw.empty:
+            return []
+
+        # Enrich each team's players with per-game stats
+        all_rosters_enriched = _enrich_with_rates(all_rosters_raw, rates_df)
+
+        # Split by team
+        league_rosters: dict[str, pd.DataFrame] = {}
+        for tid, group in all_rosters_enriched.groupby("team_id"):
+            league_rosters[str(tid)] = group.reset_index(drop=True)
+
+        # Get team names from matchup table (use team_id as fallback)
+        team_names: dict[str, str] = {}
+        try:
+            teams_df = conn.execute(
+                f"""
+                SELECT DISTINCT team_id_home AS team_id
+                FROM {FACT_MATCHUPS}
+                WHERE season = ?
+                UNION
+                SELECT DISTINCT team_id_away AS team_id
+                FROM {FACT_MATCHUPS}
+                WHERE season = ?
+                """,
+                [season, season],
+            ).fetchdf()
+            for _, row in teams_df.iterrows():
+                tid = str(row["team_id"])
+                # Extract short team number from key (e.g. "422.l.87941.t.3" → "Team 3")
+                parts = tid.split(".")
+                num = parts[-1] if parts else tid
+                team_names[tid] = f"Team {num}"
+        except Exception:
+            pass
+
+        return generate_trade_proposals(
+            matchup_summary=matchup_summary,
+            my_roster_df=my_roster_enriched,
+            league_rosters=league_rosters,
+            team_names=team_names,
+            my_team_key=my_team_key,
+        )
+    except Exception as exc:
+        logger.warning("Trade proposal generation failed (non-fatal): %s", exc)
+        return []
 
 
 def _serialize_waiver_rankings(
