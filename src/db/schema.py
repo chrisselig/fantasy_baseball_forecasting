@@ -250,7 +250,8 @@ CREATE TABLE IF NOT EXISTS {FACT_PROJECTIONS} (
     proj_fpct           DECIMAL(5, 3),
     proj_whip           DECIMAL(5, 3),  -- [LOWEST WINS]
     proj_k_bb           DECIMAL(5, 2),
-    -- ── Metadata ─────────────────────────────────────────────────────────
+    -- ── Frequency + Metadata ────────────────────────────────────────────
+    games_per_day       DECIMAL(5, 3),    -- games_played / season_days (usage freq)
     games_remaining     INTEGER,
     source              VARCHAR NOT NULL,  -- steamer | zips | trailing_30 | fallback
     PRIMARY KEY (player_id, projection_date, target_week)

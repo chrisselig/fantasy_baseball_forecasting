@@ -209,19 +209,23 @@ def project_week_totals(
 ) -> pd.DataFrame:
     """Combine accumulated stats with remaining-week projections.
 
-    Per-game projection rates are scaled by ``days_remaining`` (as a proxy
-    for games remaining — roughly 1 game per day in MLB) before being added
-    to actuals.  Rate stats (AVG, OPS, FPCT, WHIP, K/BB) are recomputed
-    from the combined components, never averaged directly.
+    Per-game projection rates are scaled by each player's expected remaining
+    games: ``per_game_rate × games_per_day × days_remaining``.  The
+    ``games_per_day`` frequency factor (season games / season days) ensures
+    that SPs who pitch every 5th day project ~1 more start, not 5.
+    Rate stats (AVG, OPS, FPCT, WHIP, K/BB) are recomputed from the
+    combined components, never averaged directly.
 
     Args:
         stats_df: Accumulated week-to-date stats. One row per player.
                   Must contain all fact_player_stats_daily columns.
-        projections_df: Remaining-game projections (per-game rates).
+        projections_df: Remaining-week projections (per-game rates).
                         One row per player.  Must contain all
-                        fact_projections columns.
+                        fact_projections columns.  May include a
+                        ``games_per_day`` column for frequency scaling.
         days_remaining: Days left in the matchup week (0–6).  Per-game
-                        projection rates are multiplied by this value.
+                        projection rates are multiplied by
+                        ``games_per_day × days_remaining``.
         advanced_df: Optional fact_player_advanced_stats rows. When supplied,
             per-game projection rates for HR, K, walks_allowed, and
             hits_allowed are first shrunk toward Statcast-implied priors,
@@ -242,8 +246,16 @@ def project_week_totals(
 
     result = merged[["player_id"]].copy()
 
-    # Scale factor: per-game rates × days remaining ≈ games remaining
-    scale = max(days_remaining, 0)
+    # Per-player scale: per-game rate × games_per_day × days_remaining.
+    # games_per_day captures how often each player actually appears
+    # (e.g. ~0.2 for SPs, ~0.85 for everyday hitters). Falls back to 1.0
+    # (legacy behavior) when the column is absent.
+    days = max(days_remaining, 0)
+    if "games_per_day" in merged.columns:
+        freq = merged["games_per_day"].fillna(1.0).clip(lower=0.0, upper=1.0)
+    else:
+        freq = pd.Series(1.0, index=merged.index)
+    scale = freq * days
 
     # --- Aggregate counting stats ---
     counting_cols = [

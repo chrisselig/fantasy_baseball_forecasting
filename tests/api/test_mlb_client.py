@@ -696,6 +696,7 @@ class TestGetSteamerProjections:
             "proj_fpct",
             "proj_whip",
             "proj_k_bb",
+            "games_per_day",
             "games_remaining",
             "source",
         ]
@@ -797,6 +798,7 @@ class TestGetSeasonStatsForProjections:
             "proj_fpct",
             "proj_whip",
             "proj_k_bb",
+            "games_per_day",
             "games_remaining",
             "source",
         ]

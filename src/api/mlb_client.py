@@ -163,6 +163,7 @@ _PROJECTIONS_COLUMNS = [
     "proj_fpct",
     "proj_whip",  # LOWEST WINS
     "proj_k_bb",
+    "games_per_day",
     "games_remaining",
     "source",
 ]
@@ -1034,7 +1035,9 @@ def get_season_stats_for_projections(
 
     df = pd.DataFrame(rows)
 
-    # Scale season stats to per-game rates, then caller multiplies by games_remaining
+    # Scale season stats to per-game rates, then caller multiplies by
+    # games_remaining. project_week_totals applies a per-player frequency
+    # factor (games_per_day) so SPs aren't projected as if pitching daily.
     for col in df.columns:
         if col.startswith("proj_") and col not in (
             "proj_avg",
@@ -1046,6 +1049,13 @@ def get_season_stats_for_projections(
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
             games = df["games_played"].clip(lower=1)
             df[col] = df[col] / games  # Per-game rate
+
+    # Compute games_per_day frequency so the projection model can scale
+    # each player's per-game rate by how often they actually appear.
+    season_start = datetime.date(season, 3, 20)  # approximate Opening Day
+    today = datetime.date.today()
+    season_days = max((today - season_start).days, 1)
+    df["games_per_day"] = df["games_played"].clip(lower=0) / season_days
 
     df["games_remaining"] = None  # Caller fills in from schedule
     df["source"] = "mlb_pace"
