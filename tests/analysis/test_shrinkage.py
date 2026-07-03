@@ -73,6 +73,11 @@ class TestPriorHelpers:
         # 20% K-BB% → ~28% K rate (20 + 8)
         assert prior_k_per_bf_from_kbb(20.0) == pytest.approx(0.28, abs=0.005)
 
+    def test_prior_k_per_bf_from_kbb_floor(self) -> None:
+        # Matches the documented formula: K-BB%/100 + 0.08, floored at 0.10.
+        # A tiny K-BB% (0%) yields 0.08, which is floored up to 0.10.
+        assert prior_k_per_bf_from_kbb(0.0) == pytest.approx(0.10)
+
     def test_priors_return_none_for_missing(self) -> None:
         assert prior_ops_from_xwoba(None) is None
         assert prior_avg_from_xwoba(float("nan")) is None

@@ -27,7 +27,7 @@ We use empirically calibrated linear approximations:
   AVG                  ≈ 0.625 × xwOBA + 0.07
   HR per plate appearance ≈ Barrel% (decimal) × 0.006
   WHIP                 ≈ 5.7 × xwOBA-against − 0.50
-  K per batter faced   ≈ K-BB% (decimal) + 0.13      (rough; floor at 0.15)
+  K per batter faced   ≈ K-BB% (decimal) + 0.08      (rough; floor at 0.10)
 
 These map "what should have happened" (Statcast quality of contact) into the
 fantasy stat lines we score. They are intentionally simple and league-average
