@@ -15,7 +15,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-from collections.abc import Generator
+import threading
+from collections.abc import Callable, Generator
 
 import duckdb
 
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 _DATABASE_NAME = "fantasy_baseball"
 _TOKEN_ENV_VAR = "MOTHERDUCK_TOKEN"
+
+# Module-level cached connection for long-lived readers (e.g. the Shiny app),
+# guarded by a lock so concurrent reactive renders share a single connection
+# instead of each opening a fresh MotherDuck connection.
+_shared_connection: duckdb.DuckDBPyConnection | None = None
+_shared_lock = threading.Lock()
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
@@ -72,6 +79,67 @@ def managed_connection() -> Generator[duckdb.DuckDBPyConnection, None, None]:
         yield conn
     finally:
         conn.close()
+
+
+def get_shared_connection() -> duckdb.DuckDBPyConnection:
+    """Return a process-wide cached DuckDB connection, opening it on first use.
+
+    Intended for the read-only Shiny app, where opening a fresh MotherDuck
+    connection in every ``_load_*`` helper adds ~10 network round-trips per
+    session start. The connection is created lazily under a lock and reused.
+
+    Returns:
+        The shared open DuckDB connection.
+    """
+    global _shared_connection
+    with _shared_lock:
+        if _shared_connection is None:
+            _shared_connection = get_connection()
+        return _shared_connection
+
+
+def reset_shared_connection() -> None:
+    """Close and clear the cached shared connection, if any.
+
+    The next call to :func:`get_shared_connection` or :func:`run_shared`
+    will transparently reconnect.
+    """
+    global _shared_connection
+    with _shared_lock:
+        conn, _shared_connection = _shared_connection, None
+    if conn is not None:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+def run_shared[T](operation: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
+    """Run ``operation`` against the shared connection, reconnecting once on error.
+
+    Serializes access to the cached connection under a lock. If the operation
+    raises (e.g. the connection went stale), the cache is dropped, a fresh
+    connection is opened, and the operation is retried exactly once.
+
+    Args:
+        operation: Callable receiving an open connection and returning a result.
+
+    Returns:
+        Whatever ``operation`` returns.
+
+    Raises:
+        Exception: Propagated if the operation fails again after reconnecting.
+    """
+    global _shared_connection
+    with _shared_lock:
+        if _shared_connection is None:
+            _shared_connection = get_connection()
+        try:
+            return operation(_shared_connection)
+        except Exception:
+            logger.warning("Shared connection query failed; reconnecting once")
+            with contextlib.suppress(Exception):
+                _shared_connection.close()
+            _shared_connection = get_connection()
+            return operation(_shared_connection)
 
 
 def is_motherduck() -> bool:
