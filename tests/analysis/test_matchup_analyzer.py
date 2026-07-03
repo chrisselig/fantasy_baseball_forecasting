@@ -491,3 +491,40 @@ def test_shrink_projection_rates_zero_pa_leaves_hr_unchanged() -> None:
     )
     result = _shrink_projection_rates(proj, stats, adv)
     assert result.iloc[0]["proj_hr"] == pytest.approx(0.5)
+
+
+def test_project_week_totals_missing_games_per_day_defaults_to_one() -> None:
+    # A NaN games_per_day must fall back to 1.0 (plays every day), not be
+    # zeroed by the blanket fillna(0). Regression test for the ordering bug.
+    stats = pd.DataFrame([_make_stats_row("p1", h=5, ab=20)])
+    proj = pd.DataFrame([_make_proj_row("p1", proj_h=2.0, proj_ab=6.0)])
+    proj["games_per_day"] = float("nan")
+    result = project_week_totals(stats, proj, days_remaining=3)
+    # H = 5 + 2.0 * 1.0 (fallback) * 3 = 11, not 5 (which zeroing would give).
+    assert result.iloc[0]["h"] == pytest.approx(11.0, abs=1e-6)
+
+
+def test_project_week_totals_numeric_player_id_matches_across_frames() -> None:
+    # Numeric player_id on the stats side must still merge with the
+    # str-normalized projections side (which _shrink_projection_rates casts).
+    stats_row = _make_stats_row("p1", h=5, ab=20)
+    stats_row["player_id"] = 12345  # numeric, as the DB may return it
+    stats = pd.DataFrame([stats_row])
+    proj_row = _make_proj_row("p1", proj_h=2.0, proj_ab=6.0)
+    proj_row["player_id"] = 12345  # numeric
+    proj = pd.DataFrame([proj_row])
+    adv = pd.DataFrame(
+        [
+            {
+                "player_id": "12345",
+                "xwoba": 0.340,
+                "barrel_pct": 10.0,
+                "xwoba_against": None,
+                "k_bb_pct": None,
+            }
+        ]
+    )
+    result = project_week_totals(stats, proj, days_remaining=3, advanced_df=adv)
+    # One merged row (not two unmatched), with the projection applied.
+    assert len(result) == 1
+    assert result.iloc[0]["h"] == pytest.approx(11.0, abs=1e-6)
