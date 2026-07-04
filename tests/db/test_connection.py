@@ -149,9 +149,11 @@ class TestSharedConnection:
 
         calls: list[int] = []
 
-        def _op(conn: duckdb.DuckDBPyConnection) -> tuple:
+        def _op(conn: duckdb.DuckDBPyConnection) -> tuple[int, ...]:
             calls.append(1)
-            return conn.execute("SELECT 7").fetchone()
+            row = conn.execute("SELECT 7").fetchone()
+            assert row is not None
+            return row
 
         result = run_shared(_op)
         assert result == (7,)

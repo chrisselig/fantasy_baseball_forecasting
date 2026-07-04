@@ -1134,21 +1134,23 @@ class TestStepLoadPlayerNews:
 # ── _cleanup_stale_stats tests (data-loss guard) ──────────────────────────────
 
 
-def _seed_player(conn, player_id: str, name: str) -> None:
+def _seed_player(conn: duckdb.DuckDBPyConnection, player_id: str, name: str) -> None:
     conn.execute(
         f"INSERT INTO {DIM_PLAYERS} (player_id, full_name) VALUES (?, ?)",
         [player_id, name],
     )
 
 
-def _seed_daily_stat(conn, player_id: str) -> None:
+def _seed_daily_stat(conn: duckdb.DuckDBPyConnection, player_id: str) -> None:
     conn.execute(
         f"INSERT INTO {FACT_PLAYER_STATS_DAILY} (player_id, stat_date) VALUES (?, ?)",
         [player_id, datetime.date(2026, 4, 9)],
     )
 
 
-def test_cleanup_stale_stats_removes_only_stale_prefix(conn):
+def test_cleanup_stale_stats_removes_only_stale_prefix(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
     """Only '422.p.%' orphans are deleted; other orphans are preserved."""
     _seed_player(conn, "423.p.1", "Active Player")
     _seed_daily_stat(conn, "423.p.1")  # active, in dim_players -> keep
@@ -1166,23 +1168,26 @@ def test_cleanup_stale_stats_removes_only_stale_prefix(conn):
     assert remaining == {"423.p.1", "423.p.777"}
 
 
-def test_cleanup_stale_stats_skips_when_dim_players_empty(conn):
+def test_cleanup_stale_stats_skips_when_dim_players_empty(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
     """With an empty dim_players, nothing is deleted (would otherwise wipe all)."""
     _seed_daily_stat(conn, "422.p.99")
     _seed_daily_stat(conn, "423.p.1")
 
     _cleanup_stale_stats(conn)  # dim_players empty
 
-    count = conn.execute(f"SELECT COUNT(*) FROM {FACT_PLAYER_STATS_DAILY}").fetchone()[
-        0
-    ]
-    assert count == 2  # untouched
+    row = conn.execute(f"SELECT COUNT(*) FROM {FACT_PLAYER_STATS_DAILY}").fetchone()
+    assert row is not None
+    assert row[0] == 2  # untouched
 
 
 # ── _step_load_yahoo fa_df init (UnboundLocalError guard) ─────────────────────
 
 
-def test_step_load_yahoo_free_agent_failure_returns_empty_fa_df(conn, monkeypatch):
+def test_step_load_yahoo_free_agent_failure_returns_empty_fa_df(
+    conn: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A get_free_agents() exception must not raise UnboundLocalError."""
     import unittest.mock as mock
 
@@ -1211,8 +1216,11 @@ def test_step_load_yahoo_free_agent_failure_returns_empty_fa_df(conn, monkeypatc
 
 
 def test_run_daily_pipeline_writes_back_refresh_token(
-    conn, settings, today, monkeypatch
-):
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The rotated Yahoo refresh token is passed to the writeback helper."""
     import unittest.mock as mock
 
@@ -1243,8 +1251,11 @@ def test_run_daily_pipeline_writes_back_refresh_token(
 
 
 def test_run_daily_pipeline_writeback_error_is_non_fatal(
-    conn, settings, today, monkeypatch
-):
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A writeback failure must not fail the run."""
     import unittest.mock as mock
 

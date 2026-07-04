@@ -1169,9 +1169,12 @@ class TestGetSavantPitcherAdvanced:
 
 def test_module_session_has_retry_adapter() -> None:
     """The shared MLB session mounts a retrying adapter on https."""
+    from requests.adapters import HTTPAdapter
+
     from src.api.mlb_client import _SESSION
 
     adapter = _SESSION.get_adapter("https://statsapi.mlb.com")
+    assert isinstance(adapter, HTTPAdapter)
     retries = adapter.max_retries
     assert retries.total == 3
     assert retries.backoff_factor == 1

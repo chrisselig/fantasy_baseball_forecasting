@@ -7,7 +7,7 @@ Uses realistic mid-week matchup fixture data.
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -881,7 +881,7 @@ def test_rank_free_agents_penalty_not_applied_to_negative_scores(
 
     # Two identical, terrible hitters (all zeros) → negative overall_score.
     # One is OF-eligible (stacked, would be penalized), one C (needed).
-    bad_stats = {
+    bad_stats: dict[str, Any] = {
         "h": 0.0,
         "hr": 0.0,
         "sb": 0.0,

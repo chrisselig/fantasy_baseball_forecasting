@@ -1071,7 +1071,10 @@ class TestParsers:
 class TestSessionAndRetry:
     def test_session_has_retry_adapter(self, client: YahooClient) -> None:
         """The client mounts a retrying adapter on https for rate-limiting."""
+        from requests.adapters import HTTPAdapter
+
         adapter = client._session.get_adapter("https://example.com")
+        assert isinstance(adapter, HTTPAdapter)
         retries = adapter.max_retries
         assert retries.total == 3
         assert retries.backoff_factor == 1
