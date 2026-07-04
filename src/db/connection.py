@@ -5,6 +5,8 @@ MotherDuck connection management.
 
 In production (MOTHERDUCK_TOKEN set): connects to MotherDuck cloud DuckDB.
 In local dev / tests (no token): falls back to an in-memory DuckDB instance.
+In CI (GITHUB_ACTIONS/CI set) with no token: raises rather than falling back,
+so a misconfigured pipeline fails loudly instead of silently writing nothing.
 
 All other modules obtain connections exclusively through this module.
 Never construct a duckdb connection outside of get_connection().
@@ -46,11 +48,24 @@ def get_connection() -> duckdb.DuckDBPyConnection:
     """
     token = os.environ.get(_TOKEN_ENV_VAR)
     if token:
-        connection_string = f"md:{_DATABASE_NAME}?motherduck_token={token}"
+        # Pass the token via config rather than embedding it in the connection
+        # string so a failed connect cannot echo the credential into logs.
         logger.info("Connecting to MotherDuck database: %s", _DATABASE_NAME)
-        conn = duckdb.connect(connection_string)
+        conn = duckdb.connect(
+            f"md:{_DATABASE_NAME}",
+            config={"motherduck_token": token},
+        )
         conn.execute(f"USE {_DATABASE_NAME}")
         return conn
+
+    # In CI/GitHub Actions a missing token must fail loudly: otherwise the
+    # pipeline silently writes to a throwaway in-memory DB and reports success.
+    if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"):
+        raise RuntimeError(
+            f"{_TOKEN_ENV_VAR} is not set but the process is running in CI "
+            "(GITHUB_ACTIONS/CI). Refusing to fall back to an in-memory DuckDB, "
+            "which would discard all pipeline output. Set the MotherDuck token."
+        )
 
     logger.warning(
         "%s not set — using in-memory DuckDB (data will not persist)",
