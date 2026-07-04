@@ -118,7 +118,10 @@ _SAMPLE_SCHEDULE = {
 class TestGetRecentCallups:
     def test_returns_correct_columns(self) -> None:
         """Returns DataFrame with expected columns."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_TRANSACTIONS)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_TRANSACTIONS),
+        ):
             df = get_recent_callups(days=7)
 
         assert list(df.columns) == [
@@ -131,7 +134,10 @@ class TestGetRecentCallups:
 
     def test_filters_to_callups_only(self) -> None:
         """Only typeCode='CU' transactions are returned."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_TRANSACTIONS)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_TRANSACTIONS),
+        ):
             df = get_recent_callups(days=7)
 
         # DFA transaction (99999) should not appear
@@ -140,7 +146,10 @@ class TestGetRecentCallups:
 
     def test_correct_values_parsed(self) -> None:
         """mlb_id, full_name, team, from_level parsed correctly."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_TRANSACTIONS)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_TRANSACTIONS),
+        ):
             df = get_recent_callups(days=7)
 
         first = df[df["mlb_id"] == 12345].iloc[0]
@@ -151,7 +160,10 @@ class TestGetRecentCallups:
 
     def test_empty_transactions(self) -> None:
         """Returns empty DataFrame with correct columns when no transactions."""
-        with patch("requests.get", return_value=_make_response({"transactions": []})):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response({"transactions": []}),
+        ):
             df = get_recent_callups(days=7)
 
         assert df.empty
@@ -176,7 +188,9 @@ class TestGetRecentCallups:
                 }
             ]
         }
-        with patch("requests.get", return_value=_make_response(non_cu_data)):
+        with patch(
+            "src.api.mlb_client._SESSION.get", return_value=_make_response(non_cu_data)
+        ):
             df = get_recent_callups(days=7)
 
         assert df.empty
@@ -188,7 +202,10 @@ class TestGetRecentCallups:
 class TestGetPlayerInfo:
     def test_returns_correct_keys(self) -> None:
         """Returns dict with all expected keys."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_PLAYER)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_PLAYER),
+        ):
             result = get_player_info(12345)
 
         expected_keys = {
@@ -204,7 +221,10 @@ class TestGetPlayerInfo:
 
     def test_correct_values(self) -> None:
         """Parses player metadata correctly."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_PLAYER)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_PLAYER),
+        ):
             result = get_player_info(12345)
 
         assert result["mlb_id"] == 12345
@@ -217,7 +237,10 @@ class TestGetPlayerInfo:
 
     def test_empty_people_returns_defaults(self) -> None:
         """Returns default dict when API returns empty people list."""
-        with patch("requests.get", return_value=_make_response({"people": []})):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response({"people": []}),
+        ):
             result = get_player_info(99999)
 
         assert result["mlb_id"] == 99999
@@ -239,7 +262,10 @@ class TestGetPlayerInfo:
                 }
             ]
         }
-        with patch("requests.get", return_value=_make_response(inactive_player)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(inactive_player),
+        ):
             result = get_player_info(55555)
 
         assert result["status"] == "Inactive"
@@ -251,7 +277,10 @@ class TestGetPlayerInfo:
 class TestGetDailyGameSchedule:
     def test_returns_correct_columns(self) -> None:
         """Returns DataFrame with expected columns."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_SCHEDULE)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_SCHEDULE),
+        ):
             df = get_daily_game_schedule(datetime.date(2026, 3, 14))
 
         assert list(df.columns) == [
@@ -264,7 +293,10 @@ class TestGetDailyGameSchedule:
 
     def test_both_teams_returned(self) -> None:
         """Both home and away teams appear as separate rows."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_SCHEDULE)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_SCHEDULE),
+        ):
             df = get_daily_game_schedule(datetime.date(2026, 3, 14))
 
         assert len(df) == 2
@@ -272,7 +304,10 @@ class TestGetDailyGameSchedule:
 
     def test_home_team_opponent_is_away(self) -> None:
         """Home team's opponent_team is the away team abbreviation."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_SCHEDULE)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_SCHEDULE),
+        ):
             df = get_daily_game_schedule(datetime.date(2026, 3, 14))
 
         home_row = df[df["home_away"] == "home"].iloc[0]
@@ -282,7 +317,10 @@ class TestGetDailyGameSchedule:
 
     def test_away_team_no_pitcher(self) -> None:
         """probable_pitcher is None when no pitcher listed."""
-        with patch("requests.get", return_value=_make_response(_SAMPLE_SCHEDULE)):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(_SAMPLE_SCHEDULE),
+        ):
             df = get_daily_game_schedule(datetime.date(2026, 3, 14))
 
         away_row = df[df["home_away"] == "away"].iloc[0]
@@ -290,7 +328,10 @@ class TestGetDailyGameSchedule:
 
     def test_empty_schedule(self) -> None:
         """Returns empty DataFrame with correct columns when no games."""
-        with patch("requests.get", return_value=_make_response({"dates": []})):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response({"dates": []}),
+        ):
             df = get_daily_game_schedule(datetime.date(2026, 3, 14))
 
         assert df.empty
@@ -337,7 +378,10 @@ class TestGetMinorLeagueStats:
 
     def test_returns_aaa_when_data_available(self) -> None:
         """Returns AAA stats when AAA data is present."""
-        with patch("requests.get", return_value=_make_response(self._aaa_response())):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(self._aaa_response()),
+        ):
             df = get_minor_league_stats(12345, 2026)
 
         assert not df.empty
@@ -379,7 +423,7 @@ class TestGetMinorLeagueStats:
                 return _make_response(aa_response)
             return _make_response(self._empty_response())
 
-        with patch("requests.get", side_effect=side_effect):
+        with patch("src.api.mlb_client._SESSION.get", side_effect=side_effect):
             df = get_minor_league_stats(12345, 2026)
 
         assert not df.empty
@@ -387,7 +431,10 @@ class TestGetMinorLeagueStats:
 
     def test_returns_empty_when_no_data_at_any_level(self) -> None:
         """Returns empty DataFrame with correct columns when no MiLB data found."""
-        with patch("requests.get", return_value=_make_response(self._empty_response())):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(self._empty_response()),
+        ):
             df = get_minor_league_stats(12345, 2026)
 
         assert df.empty
@@ -396,7 +443,10 @@ class TestGetMinorLeagueStats:
 
     def test_correct_columns(self) -> None:
         """Returns DataFrame with expected columns."""
-        with patch("requests.get", return_value=_make_response(self._aaa_response())):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(self._aaa_response()),
+        ):
             df = get_minor_league_stats(12345, 2026)
 
         expected_cols = {
@@ -419,7 +469,10 @@ class TestGetMinorLeagueStats:
 
     def test_mlb_id_set_correctly(self) -> None:
         """mlb_id in result matches the input mlb_id."""
-        with patch("requests.get", return_value=_make_response(self._aaa_response())):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response(self._aaa_response()),
+        ):
             df = get_minor_league_stats(12345, 2026)
 
         assert df.iloc[0]["mlb_id"] == 12345
@@ -521,7 +574,10 @@ def _mock_requests_for_boxscore(
 class TestGetBatterStats:
     def test_returns_empty_df_when_no_games(self) -> None:
         """Returns empty DataFrame with correct columns when no games found."""
-        with patch("requests.get", return_value=_make_response({"dates": []})):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response({"dates": []}),
+        ):
             df = get_batter_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
 
         assert list(df.columns) == [
@@ -545,7 +601,9 @@ class TestGetBatterStats:
 
     def test_returns_correct_columns_on_success(self) -> None:
         """Returns DataFrame with fact_player_stats_daily batter columns."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         expected_cols = [
@@ -570,7 +628,9 @@ class TestGetBatterStats:
     def test_stat_date_set_to_end_date(self) -> None:
         """stat_date column is set to end_date."""
         end_date = datetime.date(2026, 4, 7)
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_batter_stats(datetime.date(2026, 4, 7), end_date)
 
         assert not df.empty
@@ -578,14 +638,18 @@ class TestGetBatterStats:
 
     def test_mlb_id_set_from_boxscore(self) -> None:
         """mlb_id is set from boxscore player data."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         assert 660271 in df["mlb_id"].values
 
     def test_total_bases_computed(self) -> None:
         """TB = singles + 2*doubles + 3*triples + 4*HR."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_batter_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         row = df[df["mlb_id"] == 660271].iloc[0]
@@ -599,7 +663,10 @@ class TestGetBatterStats:
 class TestGetPitcherStats:
     def test_returns_empty_df_when_no_games(self) -> None:
         """Returns empty DataFrame with correct columns when no games found."""
-        with patch("requests.get", return_value=_make_response({"dates": []})):
+        with patch(
+            "src.api.mlb_client._SESSION.get",
+            return_value=_make_response({"dates": []}),
+        ):
             df = get_pitcher_stats(datetime.date(2026, 4, 1), datetime.date(2026, 4, 7))
 
         assert df.empty
@@ -621,7 +688,9 @@ class TestGetPitcherStats:
 
     def test_returns_correct_columns_on_success(self) -> None:
         """Returns DataFrame with pitcher stat columns."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         expected_cols = [
@@ -642,7 +711,9 @@ class TestGetPitcherStats:
 
     def test_k_bb_computed(self) -> None:
         """k_bb is computed from k/walks_allowed."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         sp_row = df[df["mlb_id"] == 543000].iloc[0]
@@ -651,7 +722,9 @@ class TestGetPitcherStats:
 
     def test_sv_h_computed(self) -> None:
         """sv_h = sv + holds."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         closer_row = df[df["mlb_id"] == 665742].iloc[0]
@@ -659,7 +732,9 @@ class TestGetPitcherStats:
 
     def test_whip_computed(self) -> None:
         """WHIP = (walks_allowed + hits_allowed) / IP."""
-        with patch("requests.get", side_effect=_mock_requests_for_boxscore):
+        with patch(
+            "src.api.mlb_client._SESSION.get", side_effect=_mock_requests_for_boxscore
+        ):
             df = get_pitcher_stats(datetime.date(2026, 4, 7), datetime.date(2026, 4, 7))
 
         sp_row = df[df["mlb_id"] == 543000].iloc[0]
@@ -773,7 +848,7 @@ class TestGetSeasonStatsForProjections:
     def test_returns_correct_columns(self) -> None:
         """Returns DataFrame with all projection columns."""
         with patch(
-            "requests.get",
+            "src.api.mlb_client._SESSION.get",
             return_value=_make_response(self._season_hitting_response()),
         ):
             df = get_season_stats_for_projections([660271], 2026)
@@ -807,7 +882,7 @@ class TestGetSeasonStatsForProjections:
     def test_source_is_mlb_pace(self) -> None:
         """Source column is 'mlb_pace'."""
         with patch(
-            "requests.get",
+            "src.api.mlb_client._SESSION.get",
             return_value=_make_response(self._season_hitting_response()),
         ):
             df = get_season_stats_for_projections([660271], 2026)
@@ -818,7 +893,7 @@ class TestGetSeasonStatsForProjections:
     def test_stats_scaled_to_per_game(self) -> None:
         """Counting stats are divided by games_played to give per-game rates."""
         with patch(
-            "requests.get",
+            "src.api.mlb_client._SESSION.get",
             return_value=_make_response(self._season_hitting_response()),
         ):
             df = get_season_stats_for_projections([660271], 2026)
@@ -830,7 +905,7 @@ class TestGetSeasonStatsForProjections:
     def test_handles_api_failure_gracefully(self) -> None:
         """Returns empty DataFrame when API fails."""
         with patch(
-            "requests.get",
+            "src.api.mlb_client._SESSION.get",
             side_effect=requests.RequestException("timeout"),
         ):
             df = get_season_stats_for_projections([660271], 2026)
@@ -1087,3 +1162,17 @@ class TestGetSavantPitcherAdvanced:
         assert len(out) == 1
         assert out.iloc[0]["xera"] == pytest.approx(3.50)
         assert pd.isna(out.iloc[0]["barrel_pct_against"])
+
+
+# ── Session retry configuration ───────────────────────────────────────────────
+
+
+def test_module_session_has_retry_adapter() -> None:
+    """The shared MLB session mounts a retrying adapter on https."""
+    from src.api.mlb_client import _SESSION
+
+    adapter = _SESSION.get_adapter("https://statsapi.mlb.com")
+    retries = adapter.max_retries
+    assert retries.total == 3
+    assert retries.backoff_factor == 1
+    assert set(retries.status_forcelist) == {429, 500, 502, 503, 504}
