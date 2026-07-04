@@ -11,6 +11,13 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Prevent overlapping pipeline runs (e.g. a manual dispatch during the
+# scheduled run) from racing on the same MotherDuck tables. Let an
+# in-progress run finish rather than cancelling it mid-write.
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
 jobs:
   run-pipeline:
     name: Run daily pipeline

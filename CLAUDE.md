@@ -29,25 +29,45 @@ League settings: `config/league_settings.yaml`
 fantasy_baseball_forecasting/
 ├── .github/
 │   └── workflows/
-│       └── daily_pipeline.yml     # Cron pipeline: runs daily at 9am MT
+│       ├── ci.yml                 # CI (ruff + mypy + pytest) on PRs; deploy to shinyapps.io on push to main
+│       ├── daily_pipeline.yml     # Cron pipeline: runs daily at 9am MT
+│       ├── backfill_stats.yml     # Manual: backfill daily MLB stats for a date range
+│       ├── seed_data.yml          # Manual: seed MotherDuck with a 2025 simulation dataset
+│       └── debug_projections.yml  # Manual: dump projection debug output for troubleshooting
+├── .claude/
+│   └── commands/                  # Project slash commands (see "Project Commands" below)
 ├── config/
 │   └── league_settings.yaml       # League configuration (scoring, roster, schedule)
 ├── scripts/
-│   └── yahoo_auth.py              # One-time local OAuth token generator
+│   ├── yahoo_auth.py              # One-time local OAuth token generator
+│   ├── backfill_reports.py        # Regenerate fact_daily_reports for a date range
+│   ├── backfill_stats.py          # Load fact_player_stats_daily for a date range
+│   ├── cleanup_bad_weeks.py       # Remove malformed/partial week rows from the warehouse
+│   ├── debug_projections.py       # Print projection internals for a given date/player
+│   ├── seed_2025_test.py          # Seed a small 2025 fixture dataset for local/dev testing
+│   └── seed_motherduck_2025.py    # Seed a full 2025 simulation dataset into MotherDuck
 ├── src/
+│   ├── config.py                 # Load league_settings.yaml + env config helpers
 │   ├── api/
 │   │   ├── yahoo_client.py        # Yahoo OAuth + API calls
 │   │   └── mlb_client.py          # MLB Stats API, Statcast, minor league data
 │   ├── db/
 │   │   ├── connection.py          # MotherDuck connection management
 │   │   ├── schema.py              # Table creation and migrations
-│   │   └── loaders.py             # ETL: API responses → MotherDuck tables
+│   │   ├── loaders_yahoo.py       # ETL: Yahoo API responses → MotherDuck tables
+│   │   ├── loaders_mlb.py         # ETL: MLB stats/schedule → MotherDuck tables
+│   │   ├── loaders_news.py        # ETL: player news → fact_player_news
+│   │   └── loaders_advanced.py    # ETL: Statcast/advanced metrics → fact_player_advanced_stats
 │   ├── analysis/
 │   │   ├── matchup_analyzer.py    # Category projection and win probability
 │   │   ├── waiver_ranker.py       # Free agent scoring and ranking
-│   │   └── lineup_optimizer.py    # Daily lineup + add/drop recommendations
+│   │   ├── lineup_optimizer.py    # Daily lineup + add/drop recommendations
+│   │   ├── hot_cold.py            # Rolling hot/cold streak detection
+│   │   ├── news.py                # News sentiment/impact tagging
+│   │   └── shrinkage.py           # Regression-to-mean shrinkage for small-sample stats
 │   ├── pipeline/
-│   │   └── daily_run.py           # GitHub Actions entry point
+│   │   ├── daily_run.py           # GitHub Actions entry point
+│   │   └── token_refresh.py       # Rotate + write back Yahoo OAuth tokens
 │   └── app/
 │       ├── app.py                 # Shiny for Python app entry point
 │       ├── ui.py                  # UI layout and components
@@ -55,13 +75,30 @@ fantasy_baseball_forecasting/
 │       └── stubs.py               # Mock data for dev/offline fallback
 ├── tests/                         # Unit and integration tests
 ├── docs/
-│   └── project_description.md    # Full project description and schema design
+│   └── project_description.md    # Full project description and schema design (canonical doc)
+├── app.py                         # shinyapps.io entry shim: loads MOTHERDUCK_TOKEN (from
+│                                  #   _deploy_config.py in CI, else .env) then re-exports src/app/app.py
 ├── .venv/                         # Virtual environment (untracked)
 ├── pyproject.toml                 # Project metadata and dependencies
 ├── requirements.txt               # Deployment dependencies for shinyapps.io
-├── README.md
+├── README.md                      # Project overview and quick-start
 └── .gitignore
 ```
+
+## Project Commands
+
+Project-specific slash commands live in `.claude/commands/`:
+
+- `add-tests` — scaffold tests for a module
+- `backfill` — guided historical stats/reports backfill for a date range
+- `code-conventions` — project code style and conventions reference
+- `code-review` — structured code review checklist
+- `debug-api` — troubleshoot Yahoo/MLB API calls
+- `deploy` — pre-flight checklist and shinyapps.io deploy
+- `document-feature` — document a feature
+- `new-db-table` — scaffold a new MotherDuck table (schema + loader)
+- `new-module` — scaffold a new source module with tests
+- `pipeline-health` — verify the daily pipeline landed and data is fresh
 
 ## Important
 1. Before making any change, create and checkout a feature branch: `feature/short-description`
@@ -81,6 +118,7 @@ fantasy_baseball_forecasting/
 2. Write unit tests for all data processing and analysis functions
 3. Run `pytest` and ensure all tests pass
 4. Run `ruff format .` and `ruff check .` and `mypy .` before committing
+   (`mypy .` type-checks the whole repo — `src/`, `tests/`, and `scripts/` — all must be clean)
 5. Update `docs/project_description.md` if adding or changing a module
 
 ## Data Handling Standards

@@ -8,7 +8,7 @@ import duckdb
 from src.db.schema import FACT_DAILY_REPORTS, create_all_tables
 
 
-def test_load_data_freshness_offline_when_no_db():
+def test_load_data_freshness_offline_when_no_db() -> None:
     """Returns is_offline=True when DB is unreachable."""
     from src.app.server import _load_data_freshness
 
@@ -18,7 +18,7 @@ def test_load_data_freshness_offline_when_no_db():
     assert result["generated_at"] is None
 
 
-def test_load_data_freshness_fresh_data():
+def test_load_data_freshness_fresh_data() -> None:
     """Returns is_offline=False with timestamp when report exists."""
     from src.app.server import _load_data_freshness
 
@@ -44,7 +44,7 @@ def test_load_data_freshness_fresh_data():
     conn.close()
 
 
-def test_load_data_freshness_no_report_today():
+def test_load_data_freshness_no_report_today() -> None:
     """Returns is_offline=True if no report exists for today."""
     from src.app.server import _load_data_freshness
 

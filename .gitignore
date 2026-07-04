@@ -196,6 +196,16 @@ oauth2.json
 *.token
 .env.local
 
+# CI-generated deploy config — CI writes MOTHERDUCK_TOKEN into this file
+# during the shinyapps.io deploy step; it must never be committed.
+_deploy_config.py
+
+# Agent worktree scratch directory
+.claire/
+
+# Example/scratch assets not part of the app
+statcast_example.png
+
 # PyPI configuration file
 .pypirc
 

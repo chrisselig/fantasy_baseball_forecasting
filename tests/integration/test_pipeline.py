@@ -15,12 +15,13 @@ from __future__ import annotations
 import datetime
 import json
 import unittest.mock as mock
+from collections.abc import Iterator
 
 import duckdb
 import pandas as pd
 import pytest
 
-from src.config import load_league_settings
+from src.config import LeagueSettings, load_league_settings
 from src.db.loaders_mlb import get_fantasy_week
 from src.db.schema import (
     DIM_PLAYERS,
@@ -41,7 +42,7 @@ from src.pipeline.daily_run import (
 
 
 @pytest.fixture()
-def conn() -> duckdb.DuckDBPyConnection:
+def conn() -> Iterator[duckdb.DuckDBPyConnection]:
     """In-memory DuckDB connection with all tables pre-created."""
     c = duckdb.connect(":memory:")
     create_all_tables(c)
@@ -50,7 +51,7 @@ def conn() -> duckdb.DuckDBPyConnection:
 
 
 @pytest.fixture()
-def settings():
+def settings() -> LeagueSettings:
     return load_league_settings()
 
 
@@ -60,12 +61,14 @@ def today() -> datetime.date:
 
 
 @pytest.fixture()
-def week(today) -> int:
+def week(today: datetime.date) -> int:
     return get_fantasy_week(today, _get_season_start(today.year))
 
 
 @pytest.fixture()
-def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
+def seeded_conn(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date, week: int
+) -> duckdb.DuckDBPyConnection:
     """Connection pre-seeded with realistic fixture data.
 
     Inserts:
@@ -325,7 +328,9 @@ def seeded_conn(conn, today, week) -> duckdb.DuckDBPyConnection:
 # ── Integration: _step_write_daily_report → query ──────────────────────────────
 
 
-def test_daily_report_roundtrip(seeded_conn, today, week):
+def test_daily_report_roundtrip(
+    seeded_conn: duckdb.DuckDBPyConnection, today: datetime.date, week: int
+) -> None:
     """Write a daily report and read it back — JSON structure is preserved."""
     report = {
         "report_date": today.isoformat(),
@@ -475,7 +480,12 @@ def _make_mock_fa_df() -> pd.DataFrame:
     )
 
 
-def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
+def test_full_pipeline_with_mocked_apis(
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """End-to-end pipeline: mocked APIs + in-memory DB → report written."""
     team_key = "423.l.87941.t.10"
     monkeypatch.setenv("YAHOO_TEAM_ID", "10")
@@ -525,7 +535,9 @@ def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
     assert run_row is not None
 
     # Rosters were loaded (Yahoo mock returned data)
-    roster_count = conn.execute(f"SELECT COUNT(*) FROM {FACT_ROSTERS}").fetchone()[0]
+    roster_row = conn.execute(f"SELECT COUNT(*) FROM {FACT_ROSTERS}").fetchone()
+    assert roster_row is not None
+    roster_count = roster_row[0]
     assert roster_count > 0
 
     # Daily report written (analysis ran with empty stats → valid but zero-filled report)
@@ -540,7 +552,12 @@ def test_full_pipeline_with_mocked_apis(conn, settings, today, monkeypatch):
     assert "ip_pace" in report_data
 
 
-def test_pipeline_survives_yahoo_failure(conn, settings, today, monkeypatch):
+def test_pipeline_survives_yahoo_failure(
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Pipeline reaches partial/failed status when Yahoo is unavailable."""
     empty_df = pd.DataFrame()
 
@@ -580,7 +597,12 @@ def test_pipeline_survives_yahoo_failure(conn, settings, today, monkeypatch):
     assert run_row is not None
 
 
-def test_pipeline_idempotent(conn, settings, today, monkeypatch):
+def test_pipeline_idempotent(
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Running the pipeline twice on the same day replaces the report (idempotent)."""
     monkeypatch.setenv("YAHOO_TEAM_ID", "10")
     team_key = "423.l.87941.t.10"
@@ -621,11 +643,15 @@ def test_pipeline_idempotent(conn, settings, today, monkeypatch):
         run_daily_pipeline(conn, settings, run_date=today)
 
     # Only one report per day (upsert)
-    report_count = conn.execute(
-        f"SELECT COUNT(*) FROM {FACT_DAILY_REPORTS}"
-    ).fetchone()[0]
+    report_row = conn.execute(f"SELECT COUNT(*) FROM {FACT_DAILY_REPORTS}").fetchone()
+    assert report_row is not None
+    report_count = report_row[0]
     assert report_count == 1
 
     # Two distinct pipeline run records
-    run_count = conn.execute(f"SELECT COUNT(*) FROM {FACT_PIPELINE_RUNS}").fetchone()[0]
+    run_count_row = conn.execute(
+        f"SELECT COUNT(*) FROM {FACT_PIPELINE_RUNS}"
+    ).fetchone()
+    assert run_count_row is not None
+    run_count = run_count_row[0]
     assert run_count == 2

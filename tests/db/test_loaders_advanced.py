@@ -7,6 +7,7 @@ Unit tests for src/db/loaders_advanced.py.
 from __future__ import annotations
 
 import datetime
+from typing import Any
 
 import duckdb
 import pandas as pd
@@ -59,7 +60,7 @@ def _seed_dim_players(
     conn.unregister("_tmp_dp")
 
 
-def _seed_daily(conn: duckdb.DuckDBPyConnection, rows: list[dict]) -> None:
+def _seed_daily(conn: duckdb.DuckDBPyConnection, rows: list[dict[str, Any]]) -> None:
     cols = [
         c[0] for c in conn.execute(f"DESCRIBE {FACT_PLAYER_STATS_DAILY}").fetchall()
     ]
@@ -266,9 +267,11 @@ class TestLoadAdvancedStats:
         )
         load_advanced_stats(conn, 2024, batter, pd.DataFrame())
         load_advanced_stats(conn, 2024, batter, pd.DataFrame())
-        count = conn.execute(
+        row = conn.execute(
             f"SELECT COUNT(*) FROM {FACT_PLAYER_ADVANCED_STATS}"
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        count = row[0]
         assert count == 1
 
     def test_drops_unknown_mlb_ids(self, conn: duckdb.DuckDBPyConnection) -> None:

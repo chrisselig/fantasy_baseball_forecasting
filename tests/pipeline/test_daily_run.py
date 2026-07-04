@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import datetime
 import json
+from collections.abc import Iterator
+from typing import cast
 
 import duckdb
 import pandas as pd
 import pytest
 
-from src.config import load_league_settings
+from src.config import LeagueSettings, load_league_settings
 from src.db.schema import (
     FACT_DAILY_REPORTS,
     FACT_PIPELINE_RUNS,
@@ -43,7 +45,7 @@ from src.pipeline.daily_run import (
 
 
 @pytest.fixture()
-def conn() -> duckdb.DuckDBPyConnection:
+def conn() -> Iterator[duckdb.DuckDBPyConnection]:
     """In-memory DuckDB connection with all tables created."""
     c = duckdb.connect(":memory:")
     create_all_tables(c)
@@ -52,7 +54,7 @@ def conn() -> duckdb.DuckDBPyConnection:
 
 
 @pytest.fixture()
-def settings():
+def settings() -> LeagueSettings:
     return load_league_settings()
 
 
@@ -64,11 +66,11 @@ def today() -> datetime.date:
 # ── _get_season_start ──────────────────────────────────────────────────────────
 
 
-def test_get_season_start_known():
+def test_get_season_start_known() -> None:
     assert _get_season_start(2026) == datetime.date(2026, 3, 26)
 
 
-def test_get_season_start_unknown_defaults():
+def test_get_season_start_unknown_defaults() -> None:
     d = _get_season_start(2030)
     assert d == datetime.date(2030, 3, 26)
 
@@ -76,17 +78,17 @@ def test_get_season_start_unknown_defaults():
 # ── _get_week_start ────────────────────────────────────────────────────────────
 
 
-def test_get_week_start_monday():
+def test_get_week_start_monday() -> None:
     monday = datetime.date(2026, 4, 6)
     assert _get_week_start(monday) == monday
 
 
-def test_get_week_start_midweek():
+def test_get_week_start_midweek() -> None:
     wednesday = datetime.date(2026, 4, 8)
     assert _get_week_start(wednesday) == datetime.date(2026, 4, 6)
 
 
-def test_get_week_start_sunday():
+def test_get_week_start_sunday() -> None:
     sunday = datetime.date(2026, 4, 12)
     assert _get_week_start(sunday) == datetime.date(2026, 4, 6)
 
@@ -94,7 +96,9 @@ def test_get_week_start_sunday():
 # ── _my_team_key ───────────────────────────────────────────────────────────────
 
 
-def test_my_team_key_from_config(settings, monkeypatch):
+def test_my_team_key_from_config(
+    settings: LeagueSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Uses config my_team_key if set."""
     monkeypatch.setenv("YAHOO_TEAM_ID", "5")
     # Patch settings to have a non-empty my_team_key
@@ -104,7 +108,9 @@ def test_my_team_key_from_config(settings, monkeypatch):
     assert _my_team_key(s) == "422.l.87941.t.3"
 
 
-def test_my_team_key_from_env_var(settings, monkeypatch):
+def test_my_team_key_from_env_var(
+    settings: LeagueSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Falls back to YAHOO_TEAM_ID when config my_team_key is empty."""
     from dataclasses import replace
 
@@ -113,7 +119,9 @@ def test_my_team_key_from_env_var(settings, monkeypatch):
     assert _my_team_key(empty_settings) == "469.l.87941.t.7"
 
 
-def test_my_team_key_default_when_no_env(settings, monkeypatch):
+def test_my_team_key_default_when_no_env(
+    settings: LeagueSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Uses team id '1' when config is empty and no env var is set."""
     from dataclasses import replace
 
@@ -126,11 +134,11 @@ def test_my_team_key_default_when_no_env(settings, monkeypatch):
 # ── _MLB_TEAM_ID_TO_ABBR ───────────────────────────────────────────────────────
 
 
-def test_team_id_map_has_30_teams():
+def test_team_id_map_has_30_teams() -> None:
     assert len(_MLB_TEAM_ID_TO_ABBR) == 30
 
 
-def test_team_id_map_known_entries():
+def test_team_id_map_known_entries() -> None:
     assert _MLB_TEAM_ID_TO_ABBR[147] == "NYY"
     assert _MLB_TEAM_ID_TO_ABBR[111] == "BOS"
     assert _MLB_TEAM_ID_TO_ABBR[119] == "LAD"
@@ -139,7 +147,7 @@ def test_team_id_map_known_entries():
 # ── _build_player_schedule ─────────────────────────────────────────────────────
 
 
-def test_build_player_schedule_returns_empty_on_empty_schedule():
+def test_build_player_schedule_returns_empty_on_empty_schedule() -> None:
     players_df = pd.DataFrame(
         {
             "player_id": ["p1", "p2"],
@@ -165,7 +173,7 @@ def test_build_player_schedule_returns_empty_on_empty_schedule():
     assert result.empty or list(result.columns) == ["player_id"]
 
 
-def test_build_player_schedule_filters_by_team(monkeypatch):
+def test_build_player_schedule_filters_by_team(monkeypatch: pytest.MonkeyPatch) -> None:
     """Players on teams with games today appear in schedule_df."""
     import unittest.mock as mock
 
@@ -201,7 +209,7 @@ def test_build_player_schedule_filters_by_team(monkeypatch):
 # ── _aggregate_to_team ─────────────────────────────────────────────────────────
 
 
-def test_aggregate_to_team_sums_counting_stats():
+def test_aggregate_to_team_sums_counting_stats() -> None:
     df = pd.DataFrame(
         {
             "player_id": ["p1", "p2"],
@@ -237,7 +245,7 @@ def test_aggregate_to_team_sums_counting_stats():
     assert result.iloc[0]["w"] == 1
 
 
-def test_aggregate_to_team_recomputes_avg():
+def test_aggregate_to_team_recomputes_avg() -> None:
     """AVG must be H/AB, not average of individual AVGs."""
     df = pd.DataFrame(
         {
@@ -272,7 +280,7 @@ def test_aggregate_to_team_recomputes_avg():
     assert abs(result.iloc[0]["avg"] - 0.200) < 0.001
 
 
-def test_aggregate_to_team_recomputes_whip():
+def test_aggregate_to_team_recomputes_whip() -> None:
     """WHIP must be (BB+H)/IP from components."""
     df = pd.DataFrame(
         {
@@ -307,7 +315,7 @@ def test_aggregate_to_team_recomputes_whip():
     assert abs(result.iloc[0]["whip"] - 1.5) < 0.001
 
 
-def test_aggregate_to_team_empty_returns_zeros():
+def test_aggregate_to_team_empty_returns_zeros() -> None:
     result = _aggregate_to_team(pd.DataFrame())
     assert len(result) == 1
     assert result.iloc[0]["h"] == 0
@@ -316,7 +324,7 @@ def test_aggregate_to_team_empty_returns_zeros():
 # ── _enrich_roster_with_stats ──────────────────────────────────────────────────
 
 
-def test_enrich_roster_adds_accumulated_ip():
+def test_enrich_roster_adds_accumulated_ip() -> None:
     roster = pd.DataFrame(
         {
             "player_id": ["p1", "p2"],
@@ -334,7 +342,7 @@ def test_enrich_roster_adds_accumulated_ip():
     assert result.loc[result["player_id"] == "p2", "accumulated_ip"].iloc[0] == 0.0
 
 
-def test_enrich_roster_empty_stats():
+def test_enrich_roster_empty_stats() -> None:
     roster = pd.DataFrame({"player_id": ["p1"], "slot": ["SP"]})
     result = _enrich_roster_with_stats(roster, pd.DataFrame())
     assert result.iloc[0]["accumulated_ip"] == 0.0
@@ -343,8 +351,10 @@ def test_enrich_roster_empty_stats():
 # ── _step_write_daily_report ───────────────────────────────────────────────────
 
 
-def test_step_write_daily_report_inserts_row(conn, today, settings):
-    from src.pipeline.daily_run import get_fantasy_week
+def test_step_write_daily_report_inserts_row(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date, settings: LeagueSettings
+) -> None:
+    from src.db.loaders_mlb import get_fantasy_week
 
     week = get_fantasy_week(today, _get_season_start(today.year))
 
@@ -375,9 +385,11 @@ def test_step_write_daily_report_inserts_row(conn, today, settings):
     assert row[1] == week
 
 
-def test_step_write_daily_report_upserts(conn, today, settings):
+def test_step_write_daily_report_upserts(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date, settings: LeagueSettings
+) -> None:
     """Re-writing the same report_date replaces the row."""
-    from src.pipeline.daily_run import get_fantasy_week
+    from src.db.loaders_mlb import get_fantasy_week
 
     week = get_fantasy_week(today, _get_season_start(today.year))
 
@@ -403,12 +415,14 @@ def test_step_write_daily_report_upserts(conn, today, settings):
     _step_write_daily_report(conn, report_v1, today, week, today.year, "run-1")
     _step_write_daily_report(conn, report_v2, today, week, today.year, "run-2")
 
-    count = conn.execute(f"SELECT COUNT(*) FROM {FACT_DAILY_REPORTS}").fetchone()[0]
-    assert count == 1
+    count_row = conn.execute(f"SELECT COUNT(*) FROM {FACT_DAILY_REPORTS}").fetchone()
+    assert count_row is not None
+    assert count_row[0] == 1
 
     row = conn.execute(
         f"SELECT report_json FROM {FACT_DAILY_REPORTS} WHERE report_date = ?", [today]
     ).fetchone()
+    assert row is not None
     parsed = json.loads(row[0])
     assert parsed["lineup"] == {"C": "p2"}
 
@@ -416,7 +430,7 @@ def test_step_write_daily_report_upserts(conn, today, settings):
 # ── _step_log_pipeline_run ────────────────────────────────────────────────────
 
 
-def test_step_log_pipeline_run_inserts(conn):
+def test_step_log_pipeline_run_inserts(conn: duckdb.DuckDBPyConnection) -> None:
     _step_log_pipeline_run(
         conn,
         run_id="run-abc",
@@ -433,7 +447,7 @@ def test_step_log_pipeline_run_inserts(conn):
     assert abs(float(row[1]) - 3.14) < 0.01
 
 
-def test_step_log_pipeline_run_partial_status(conn):
+def test_step_log_pipeline_run_partial_status(conn: duckdb.DuckDBPyConnection) -> None:
     _step_log_pipeline_run(
         conn,
         run_id="run-partial",
@@ -445,6 +459,7 @@ def test_step_log_pipeline_run_partial_status(conn):
     row = conn.execute(
         f"SELECT status, errors FROM {FACT_PIPELINE_RUNS} WHERE run_id = 'run-partial'"
     ).fetchone()
+    assert row is not None
     assert row[0] == "partial"
     assert "mlb: timeout" in row[1]
 
@@ -452,7 +467,9 @@ def test_step_log_pipeline_run_partial_status(conn):
 # ── _query_weekly_acquisitions ────────────────────────────────────────────────
 
 
-def test_query_weekly_acquisitions_counts_adds(conn, today):
+def test_query_weekly_acquisitions_counts_adds(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date
+) -> None:
     """Counts 'add' transactions this week for the given team."""
     week_start = _get_week_start(today)
     staging = pd.DataFrame(
@@ -503,7 +520,9 @@ def test_query_weekly_acquisitions_counts_adds(conn, today):
     assert n == 2
 
 
-def test_query_weekly_acquisitions_returns_zero_when_empty(conn, today):
+def test_query_weekly_acquisitions_returns_zero_when_empty(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date
+) -> None:
     n = _query_weekly_acquisitions(conn, "422.l.87941.t.99", today)
     assert n == 0
 
@@ -511,7 +530,9 @@ def test_query_weekly_acquisitions_returns_zero_when_empty(conn, today):
 # ── _update_waiver_scores ─────────────────────────────────────────────────────
 
 
-def test_update_waiver_scores_overwrites_placeholder(conn, today):
+def test_update_waiver_scores_overwrites_placeholder(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date
+) -> None:
     """Real scores replace the placeholder 0.0 scores."""
     # Stage placeholder
     placeholder = pd.DataFrame(
@@ -549,20 +570,30 @@ def test_update_waiver_scores_overwrites_placeholder(conn, today):
     row = conn.execute(
         f"SELECT overall_score FROM {FACT_WAIVER_SCORES} WHERE player_id = 'p1'"
     ).fetchone()
+    assert row is not None
     assert abs(float(row[0]) - 42.5) < 0.01
 
 
-def test_update_waiver_scores_no_op_on_empty(conn, today):
+def test_update_waiver_scores_no_op_on_empty(
+    conn: duckdb.DuckDBPyConnection, today: datetime.date
+) -> None:
     """Empty ranked_df does not raise or modify the table."""
     _update_waiver_scores(conn, pd.DataFrame(), today)
-    count = conn.execute(f"SELECT COUNT(*) FROM {FACT_WAIVER_SCORES}").fetchone()[0]
+    count_row = conn.execute(f"SELECT COUNT(*) FROM {FACT_WAIVER_SCORES}").fetchone()
+    assert count_row is not None
+    count = count_row[0]
     assert count == 0
 
 
 # ── run_daily_pipeline (smoke test with mocked APIs) ─────────────────────────
 
 
-def test_run_daily_pipeline_returns_run_id(conn, settings, today, monkeypatch):
+def test_run_daily_pipeline_returns_run_id(
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Pipeline completes (possibly with partial failures) and returns a run_id."""
     import unittest.mock as mock
 
@@ -598,7 +629,12 @@ def test_run_daily_pipeline_returns_run_id(conn, settings, today, monkeypatch):
     assert result["status"] in ("success", "partial", "failed")
 
 
-def test_run_daily_pipeline_logs_run(conn, settings, today, monkeypatch):
+def test_run_daily_pipeline_logs_run(
+    conn: duckdb.DuckDBPyConnection,
+    settings: LeagueSettings,
+    today: datetime.date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Pipeline always writes a run record to fact_pipeline_runs."""
     import unittest.mock as mock
 
@@ -638,8 +674,8 @@ def test_run_daily_pipeline_logs_run(conn, settings, today, monkeypatch):
 
 
 def test_pipeline_does_not_crash_with_callup_data_and_empty_roster(
-    conn, settings, today
-):
+    conn: duckdb.DuckDBPyConnection, settings: LeagueSettings, today: datetime.date
+) -> None:
     """Regression: pipeline must not KeyError when callups exist but roster is empty."""
     import datetime
     import unittest.mock as mock
@@ -708,23 +744,26 @@ def test_pipeline_does_not_crash_with_callup_data_and_empty_roster(
 
     # Must not crash — status should be partial (Yahoo failed but analysis completed)
     assert result["status"] == "partial"
-    assert "analysis" not in " ".join(
-        e for e in result.get("errors", []) if isinstance(e, str)
-    )
+    errors = cast(list[object], result.get("errors", []))
+    assert "analysis" not in " ".join(e for e in errors if isinstance(e, str))
 
 
 # ── __main__ exit code logic ──────────────────────────────────────────────────
 
 
-def test_main_exit_code_success():
+def test_main_exit_code_success() -> None:
     """status != 'failed' maps to exit code 0."""
     for status in ("success", "partial"):
-        result = {"run_id": "run-x", "status": status, "rows_written": {}}
+        result: dict[str, object] = {
+            "run_id": "run-x",
+            "status": status,
+            "rows_written": {},
+        }
         expected_exit = 0 if result["status"] != "failed" else 1
         assert expected_exit == 0
 
 
-def test_main_exit_code_failed():
+def test_main_exit_code_failed() -> None:
     """status == 'failed' maps to exit code 1."""
     result = {"run_id": "run-y", "status": "failed", "rows_written": {}}
     expected_exit = 0 if result["status"] != "failed" else 1
@@ -734,7 +773,9 @@ def test_main_exit_code_failed():
 # ── _query_player_rates / _enrich_with_rates ──────────────────────────────────
 
 
-def test_query_player_rates_computes_per_game_rates(conn):
+def test_query_player_rates_computes_per_game_rates(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
     """Season-to-date SUM is divided by number of game days → per-game rate."""
     from src.pipeline.daily_run import _query_player_rates
 
@@ -792,7 +833,7 @@ def test_query_player_rates_computes_per_game_rates(conn):
     assert abs(row["avg"] - 0.5) < 1e-6
 
 
-def test_enrich_with_rates_fills_missing_with_zero():
+def test_enrich_with_rates_fills_missing_with_zero() -> None:
     from src.pipeline.daily_run import _enrich_with_rates
 
     players = pd.DataFrame(
@@ -828,7 +869,7 @@ def test_enrich_with_rates_fills_missing_with_zero():
     assert b_row["games_played"] == 0.0
 
 
-def test_serialize_waiver_rankings_handles_nan():
+def test_serialize_waiver_rankings_handles_nan() -> None:
     from src.pipeline.daily_run import _serialize_waiver_rankings
 
     df = pd.DataFrame(
@@ -857,7 +898,7 @@ def test_serialize_waiver_rankings_handles_nan():
     json.dumps(out)  # must not raise
 
 
-def test_serialize_waiver_rankings_includes_games_played():
+def test_serialize_waiver_rankings_includes_games_played() -> None:
     from src.pipeline.daily_run import _serialize_waiver_rankings
 
     df = pd.DataFrame(
