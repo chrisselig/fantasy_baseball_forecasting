@@ -16,6 +16,16 @@ from src.db.connection import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear CI markers so the local in-memory fallback path is exercised.
+
+    Tests that specifically assert the CI guard re-set these vars in their body.
+    """
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 class TestGetConnection:
     def test_returns_in_memory_when_no_token(
         self, monkeypatch: pytest.MonkeyPatch
@@ -44,6 +54,22 @@ class TestGetConnection:
         conn = get_connection()
         assert isinstance(conn, duckdb.DuckDBPyConnection)
         conn.close()
+
+    def test_raises_in_github_actions_without_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In GitHub Actions a missing token must fail loudly, not fall back."""
+        monkeypatch.delenv("MOTHERDUCK_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        with pytest.raises(RuntimeError, match="MOTHERDUCK_TOKEN"):
+            get_connection()
+
+    def test_raises_in_ci_without_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """In generic CI a missing token must fail loudly, not fall back."""
+        monkeypatch.delenv("MOTHERDUCK_TOKEN", raising=False)
+        monkeypatch.setenv("CI", "true")
+        with pytest.raises(RuntimeError, match="MOTHERDUCK_TOKEN"):
+            get_connection()
 
 
 class TestManagedConnection:
@@ -123,9 +149,11 @@ class TestSharedConnection:
 
         calls: list[int] = []
 
-        def _op(conn: duckdb.DuckDBPyConnection) -> tuple:
+        def _op(conn: duckdb.DuckDBPyConnection) -> tuple[int, ...]:
             calls.append(1)
-            return conn.execute("SELECT 7").fetchone()
+            row = conn.execute("SELECT 7").fetchone()
+            assert row is not None
+            return row
 
         result = run_shared(_op)
         assert result == (7,)

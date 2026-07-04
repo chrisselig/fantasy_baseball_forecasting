@@ -211,15 +211,8 @@ def load_weekly_stats(
     Raises:
         ValueError: If required columns are missing in df (when df is non-empty).
     """
-    if not df.empty:
-        _validate_columns(df, _WEEKLY_STATS_REQUIRED, "load_weekly_stats")
-
-    # Delete existing rows for this week/season before rebuilding
-    conn.execute(
-        f"DELETE FROM {FACT_PLAYER_STATS_WEEKLY} "
-        f"WHERE week_number = {week_number} AND season = {season}"
-    )
-
+    # Guard: an empty DataFrame must NOT wipe the week. Check before any DELETE
+    # so that a rerun with no daily rows does not silently erase existing data.
     if df.empty:
         logger.info(
             "load_weekly_stats: empty DataFrame for week %d season %d, skipping.",
@@ -227,6 +220,8 @@ def load_weekly_stats(
             season,
         )
         return 0
+
+    _validate_columns(df, _WEEKLY_STATS_REQUIRED, "load_weekly_stats")
 
     # Aggregate raw components per player
     agg_cols = {
@@ -340,12 +335,26 @@ def load_weekly_stats(
 
     insert_df = grouped[table_columns].copy()
 
+    # Rebuild the week atomically: delete-then-insert inside a transaction so a
+    # failure mid-rebuild rolls back and leaves the prior week intact.
     conn.register("_weekly_stats_staging", insert_df)
-    conn.execute(
-        f"INSERT OR REPLACE INTO {FACT_PLAYER_STATS_WEEKLY} "
-        "SELECT * FROM _weekly_stats_staging"
-    )
-    conn.unregister("_weekly_stats_staging")
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(
+            f"DELETE FROM {FACT_PLAYER_STATS_WEEKLY} "
+            "WHERE week_number = ? AND season = ?",
+            [week_number, season],
+        )
+        conn.execute(
+            f"INSERT OR REPLACE INTO {FACT_PLAYER_STATS_WEEKLY} "
+            "SELECT * FROM _weekly_stats_staging"
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.unregister("_weekly_stats_staging")
 
     row_count = len(insert_df)
     logger.info(
@@ -521,12 +530,14 @@ def update_player_crosswalk(
     crosswalk_df = working[["full_name", "mlb_id", "fg_id"]].copy()
     conn.register("_crosswalk_staging", crosswalk_df)
 
-    # Update existing dim_players rows where full_name matches
+    # Update existing dim_players rows where full_name matches.
+    # COALESCE(s.col, existing) so a staging row that lacks fg_id (or mlb_id)
+    # does not overwrite an already-populated value with NULL.
     conn.execute(f"""
         UPDATE {DIM_PLAYERS}
         SET
-            mlb_id = s.mlb_id,
-            fg_id  = s.fg_id
+            mlb_id = COALESCE(s.mlb_id, {DIM_PLAYERS}.mlb_id),
+            fg_id  = COALESCE(s.fg_id, {DIM_PLAYERS}.fg_id)
         FROM _crosswalk_staging s
         WHERE LOWER({DIM_PLAYERS}.full_name) = LOWER(s.full_name)
           AND s.mlb_id IS NOT NULL

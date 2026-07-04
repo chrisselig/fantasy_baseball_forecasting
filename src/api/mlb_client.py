@@ -25,8 +25,31 @@ from typing import Any
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
+
+
+def _build_retrying_session() -> requests.Session:
+    """Return a requests.Session with retry/backoff mounted on https.
+
+    Retries transient failures (429 rate-limit + 5xx) with exponential backoff
+    and reuses a single connection pool across MLB Stats API calls.
+    """
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET"]),
+    )
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
+
+# Shared session reused across all MLB Stats API calls in this module.
+_SESSION = _build_retrying_session()
 
 # ── MLB Stats API endpoint constants ─────────────────────────────────────────
 
@@ -210,7 +233,7 @@ def _mlb_get(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         requests.HTTPError: On non-2xx responses.
         requests.RequestException: On network errors.
     """
-    response = requests.get(url, params=params, timeout=30)
+    response = _SESSION.get(url, params=params, timeout=30)
     response.raise_for_status()
     result: dict[str, Any] = response.json()
     return result

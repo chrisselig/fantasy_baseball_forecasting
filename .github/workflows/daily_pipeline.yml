@@ -51,6 +51,12 @@ jobs:
           YAHOO_REFRESH_TOKEN: ${{ secrets.YAHOO_REFRESH_TOKEN }}
           YAHOO_TEAM_ID: ${{ secrets.YAHOO_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT: a fine-grained PAT with "Secrets: read and write" on this
+          # repo, stored as the GH_PAT secret. The default GITHUB_TOKEN above
+          # CANNOT write repo secrets, so Yahoo refresh-token writeback only
+          # works when GH_PAT is set. Without it, writeback is skipped and the
+          # rotated Yahoo refresh token will eventually expire, breaking auth.
+          GH_PAT: ${{ secrets.GH_PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
 
 # ── Enabling this workflow ─────────────────────────────────────────────────────

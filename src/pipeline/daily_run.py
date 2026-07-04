@@ -82,6 +82,7 @@ from src.db.schema import (
     FACT_WAIVER_SCORES,
     create_all_tables,
 )
+from src.pipeline.token_refresh import maybe_write_back_refresh_token
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ def _my_team_key(settings: LeagueSettings) -> str:
 def _step_load_yahoo(
     conn: duckdb.DuckDBPyConnection,
     week: int,
-) -> tuple[dict[str, int], pd.DataFrame]:
+) -> tuple[dict[str, int], pd.DataFrame, YahooClient]:
     """Load Yahoo Fantasy data into the database.
 
     Loads my roster, all rosters, transactions, player details, and free agents.
@@ -162,8 +163,10 @@ def _step_load_yahoo(
         week: Current fantasy week number.
 
     Returns:
-        Tuple of (row_counts_per_table, free_agents_df).
+        Tuple of (row_counts_per_table, free_agents_df, yahoo_client).
         free_agents_df has player stats columns needed by rank_free_agents().
+        yahoo_client is returned so the caller can persist any rotated refresh
+        token after the run.
     """
     yahoo = YahooClient.from_env()
     row_counts: dict[str, int] = {}
@@ -212,7 +215,9 @@ def _step_load_yahoo(
 
     # Free agents — fetch with stats for waiver scoring.
     # Wrapped in try/except so a failure here does not abort the entire Yahoo step
-    # (roster and player data above is more critical).
+    # (roster and player data above is more critical). Initialize fa_df before the
+    # try so an exception in get_free_agents() cannot cause UnboundLocalError below.
+    fa_df: pd.DataFrame = pd.DataFrame()
     try:
         fa_df = yahoo.get_free_agents(count=100)
         row_counts[FACT_WAIVER_SCORES] = stage_free_agents(conn, fa_df)
@@ -227,7 +232,7 @@ def _step_load_yahoo(
         logger.warning("Free agent fetch failed (non-fatal): %s", exc)
 
     logger.info("Yahoo load complete. Row counts: %s", row_counts)
-    return row_counts, fa_df
+    return row_counts, fa_df, yahoo
 
 
 def _step_load_mlb_stats(
@@ -1689,6 +1694,55 @@ def _query_weekly_acquisitions(
 # ── Public entry point ─────────────────────────────────────────────────────────
 
 
+# Old pipeline runs wrote stats with player_ids using a wrong game-key prefix
+# ('422.p.*'). Only rows with this prefix are eligible for stale cleanup.
+_STALE_PLAYER_ID_PREFIX = "422.p.%"
+
+
+def _cleanup_stale_stats(conn: duckdb.DuckDBPyConnection) -> None:
+    """Delete only stale-prefixed stat rows that no longer match a player.
+
+    Guard rails against data loss:
+      - Skip entirely if dim_players is empty (e.g. the Yahoo load has not run
+        yet this cycle): an empty dim_players would otherwise match *everything*
+        and wipe both fact tables.
+      - Scope the delete to the stale '422.p.%' prefix only, so legitimate
+        history for players who have merely left rosters is never erased.
+
+    Args:
+        conn: Open DuckDB connection.
+    """
+    dim_row = conn.execute(f"SELECT COUNT(*) FROM {DIM_PLAYERS}").fetchone()
+    dim_player_count = dim_row[0] if dim_row is not None else 0
+    if dim_player_count == 0:
+        logger.warning(
+            "Skipping stale stats cleanup: %s is empty (would delete all rows).",
+            DIM_PLAYERS,
+        )
+        return
+
+    for table in [FACT_PLAYER_STATS_DAILY, FACT_PROJECTIONS]:
+        conn.execute(
+            f"DELETE FROM {table} WHERE player_id LIKE ? "
+            f"AND player_id NOT IN (SELECT player_id FROM {DIM_PLAYERS})",
+            [_STALE_PLAYER_ID_PREFIX],
+        )
+    logger.info("Cleaned orphaned stale-prefixed stats rows.")
+
+
+def _exit_code_for_status(status: str) -> int:
+    """Map a pipeline run status to a process exit code.
+
+    A *partial* run (some steps failed) must NOT show green in GitHub Actions —
+    otherwise silent data gaps go unnoticed — so it gets a distinct non-zero
+    code separate from a full failure.
+
+    Returns:
+        0 = success, 1 = failed (nothing landed), 2 = partial (some steps failed).
+    """
+    return {"success": 0, "partial": 2, "failed": 1}.get(status, 1)
+
+
 def run_daily_pipeline(
     conn: duckdb.DuckDBPyConnection,
     settings: LeagueSettings,
@@ -1738,24 +1792,17 @@ def run_daily_pipeline(
         errors.append(f"schema: {exc}")
         logger.error("Schema creation failed: %s", exc)
 
-    # Step 1b: Clean up stale stats that don't match any current player.
-    # Old pipeline runs wrote stats with player_ids using wrong game key
-    # prefixes (e.g. '422.p.*'). Remove stats rows whose player_id doesn't
-    # exist in dim_players so they don't pollute queries.
+    # Step 1b: Clean up stale stats written with a wrong game-key prefix.
     try:
-        for table in [FACT_PLAYER_STATS_DAILY, FACT_PROJECTIONS]:
-            conn.execute(
-                f"DELETE FROM {table} WHERE player_id NOT IN "
-                f"(SELECT player_id FROM {DIM_PLAYERS})"
-            )
-        logger.info("Cleaned orphaned stats rows.")
+        _cleanup_stale_stats(conn)
     except Exception as exc:
         logger.warning("Stale data cleanup failed (non-fatal): %s", exc)
 
     # Step 2: Load Yahoo data
     fa_df: pd.DataFrame = pd.DataFrame()
+    yahoo_client: YahooClient | None = None
     try:
-        yahoo_counts, fa_df = _step_load_yahoo(conn, week)
+        yahoo_counts, fa_df, yahoo_client = _step_load_yahoo(conn, week)
         rows_written.update(yahoo_counts)
     except Exception as exc:
         errors.append(f"yahoo: {exc}")
@@ -1841,6 +1888,17 @@ def run_daily_pipeline(
         status,
         duration,
     )
+
+    # Persist any rotated Yahoo refresh token back to GitHub Secrets. Yahoo
+    # rotates the refresh token on every access-token refresh; without this,
+    # future runs eventually fail to authenticate. Never let a writeback error
+    # fail the run.
+    if yahoo_client is not None:
+        try:
+            maybe_write_back_refresh_token(yahoo_client.refresh_token)
+        except Exception as exc:
+            logger.warning("Refresh token writeback errored (non-fatal): %s", exc)
+
     return {"run_id": run_id, "status": status, "rows_written": rows_written}
 
 
@@ -1858,4 +1916,4 @@ if __name__ == "__main__":
     with managed_connection() as conn:
         result = run_daily_pipeline(conn, settings)
     print(f"Pipeline complete: {result}")
-    sys.exit(0 if result["status"] != "failed" else 1)
+    sys.exit(_exit_code_for_status(str(result["status"])))

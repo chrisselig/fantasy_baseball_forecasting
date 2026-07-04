@@ -380,6 +380,28 @@ class TestLoadWeeklyStats:
         assert result is not None
         assert result[0] == 1  # Not doubled
 
+    def test_empty_df_does_not_wipe_existing_week(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A rerun with an empty DataFrame must NOT delete the existing week.
+
+        Regression: the empty-check used to run AFTER the DELETE, so an empty
+        rerun silently erased the week.
+        """
+        df1 = _make_weekly_input_df(["p1"], week_number=1, season=2026, h=[3])
+        load_weekly_stats(conn, df1, week_number=1, season=2026)
+
+        empty = pd.DataFrame(columns=["player_id", "week_number", "season"])
+        count = load_weekly_stats(conn, empty, week_number=1, season=2026)
+
+        assert count == 0
+        result = conn.execute(
+            f"SELECT COUNT(*) FROM {FACT_PLAYER_STATS_WEEKLY} "
+            "WHERE week_number = 1 AND season = 2026"
+        ).fetchone()
+        assert result is not None
+        assert result[0] == 1  # Existing row survived the empty rerun
+
 
 # ── load_projections tests ────────────────────────────────────────────────────
 
@@ -624,3 +646,34 @@ class TestUpdatePlayerCrosswalk:
         ).fetchone()
         assert row is not None
         assert row[0] is None  # Should remain NULL
+
+    def test_missing_fg_id_does_not_overwrite_existing(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A staging row lacking fg_id must not NULL out an existing fg_id.
+
+        Regression: the UPDATE used to set fg_id = s.fg_id unconditionally,
+        wiping a previously populated fg_id when the new staging row had none.
+        """
+        self._insert_player(conn, "yahoo.p.003", "Sam Jones")
+        # First pass populates both ids.
+        update_player_crosswalk(
+            conn,
+            pd.DataFrame(
+                {"full_name": ["Sam Jones"], "mlb_id": [777], "fg_id": ["fg777"]}
+            ),
+        )
+        # Second pass has mlb_id but no fg_id (None) — fg_id must be preserved.
+        update_player_crosswalk(
+            conn,
+            pd.DataFrame(
+                {"full_name": ["Sam Jones"], "mlb_id": [777], "fg_id": [None]}
+            ),
+        )
+
+        row = conn.execute(
+            f"SELECT mlb_id, fg_id FROM {DIM_PLAYERS} WHERE player_id='yahoo.p.003'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 777
+        assert row[1] == "fg777"  # Preserved, not overwritten with NULL

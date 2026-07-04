@@ -94,10 +94,11 @@ def _compute_batter_derived(
             SUM(COALESCE(sf, 0))             AS sf,
             SUM(COALESCE(tb, 0))             AS tb
         FROM {FACT_PLAYER_STATS_DAILY}
-        WHERE EXTRACT(year FROM stat_date) = {season}
+        WHERE EXTRACT(year FROM stat_date) = ?
         GROUP BY player_id
         HAVING SUM(COALESCE(ab, 0)) > 0
-        """
+        """,
+        [season],
     ).fetchdf()
 
     if rows.empty:
@@ -140,10 +141,11 @@ def _compute_pitcher_derived(
             SUM(COALESCE(walks_allowed, 0))  AS walks_allowed,
             SUM(COALESCE(hits_allowed, 0))   AS hits_allowed
         FROM {FACT_PLAYER_STATS_DAILY}
-        WHERE EXTRACT(year FROM stat_date) = {season}
+        WHERE EXTRACT(year FROM stat_date) = ?
         GROUP BY player_id
         HAVING SUM(COALESCE(ip, 0)) > 0
-        """
+        """,
+        [season],
     ).fetchdf()
 
     if rows.empty:
