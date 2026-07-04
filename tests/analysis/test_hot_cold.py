@@ -130,7 +130,7 @@ def test_hitter_neutral_mixed_signals() -> None:
 
 
 def test_pitcher_hot_low_whip_high_k() -> None:
-    # 12 IP, 3 W, 2 H allowed → WHIP=0.42, RA9=2.25, K9=11.25
+    # 12 IP, 3 BB, 5 H allowed → WHIP=0.67 (<1.00 and <1.10), K9=11.25
     rows = [
         _pitcher_row("p2", "2025-06-05", ip=6.0, k=8, walks_allowed=1, hits_allowed=2),
         _pitcher_row("p2", "2025-06-01", ip=6.0, k=7, walks_allowed=2, hits_allowed=3),
@@ -156,11 +156,13 @@ def test_pitcher_neutral_no_ip() -> None:
 
 
 def test_pitcher_warm_one_hot_condition() -> None:
-    # WHIP = (4+2)/7 = 0.857 → <1.10 (hot); RA9 = 6*9/7 = 7.71 → >5.00 (cold)
-    # K9 = 6*9/7 = 7.71 → neither; KBB = 6/2 = 3.0 → neither (not strictly >3.0)
-    # hot_score=1, cold_score=1 → Warm
+    # 20 IP, 15 K, 6 BB, 15 H → WHIP = 21/20 = 1.05
+    # hot: WHIP<1.10 (+1); WHIP<1.00 no; K9=6.75 not>9; KBB=2.5 not>3 → hot=1
+    # cold: WHIP>1.60/>1.50 no; K9=6.75 not<6; KBB=2.5 not<1.5 → cold=0
+    # → Warm (exactly one hot condition, zero cold)
     rows = [
-        _pitcher_row("p2", "2025-06-05", ip=7.0, k=6, walks_allowed=2, hits_allowed=4)
+        _pitcher_row("p2", "2025-06-05", ip=10.0, k=8, walks_allowed=3, hits_allowed=8),
+        _pitcher_row("p2", "2025-06-01", ip=10.0, k=7, walks_allowed=3, hits_allowed=7),
     ]
     df = pd.DataFrame(rows)
     assert _pitcher_streak(df) == _WARM
