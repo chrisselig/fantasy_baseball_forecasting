@@ -21,7 +21,7 @@ Pitcher Streak Logic — rolling last 10 days (~2 starts) — ≥ 2 of 4
 ─────────────────────────────────────────────────────────────────────
   HOT (≥ 2 of 4 conditions):
     1. WHIP  : (hits_allowed + walks_allowed) / IP < 1.10
-    2. RA9   : (hits_allowed + walks_allowed) × 9 / IP < 2.50
+    2. WHIP+ : (hits_allowed + walks_allowed) / IP < 1.00  (elite, stricter)
     3. K/9   : k × 9 / IP > 9.0
     4. K/BB  : k / walks_allowed > 3.0
 
@@ -30,7 +30,7 @@ Pitcher Streak Logic — rolling last 10 days (~2 starts) — ≥ 2 of 4
 
   COLD (≥ 2 of 4 conditions):
     1. WHIP  : > 1.60
-    2. RA9   : > 5.00
+    2. WHIP+ : > 1.50  (looser threshold)
     3. K/9   : < 6.0
     4. K/BB  : < 1.5
 
@@ -43,6 +43,7 @@ import datetime
 
 import pandas as pd
 
+from src.analysis.positions import is_pitcher
 from src.analysis.shrinkage import (
     prior_ops_from_xwoba,
     prior_whip_from_xwoba_against,
@@ -155,14 +156,13 @@ def _pitcher_streak(recent: pd.DataFrame) -> str:
     ha = float(recent["hits_allowed"].fillna(0).sum())
 
     whip = (ha + wa) / ip if ip > 0 else 99.0
-    ra9 = (ha + wa) * 9 / ip if ip > 0 else 99.0
     k9 = k * 9 / ip if ip > 0 else 0.0
     kbb = k / wa if wa > 0 else (k if k > 0 else 0.0)
 
     hot_score = 0
     if whip < 1.10:
         hot_score += 1
-    if ra9 < 2.50:
+    if whip < 1.00:
         hot_score += 1
     if k9 > 9.0:
         hot_score += 1
@@ -175,7 +175,7 @@ def _pitcher_streak(recent: pd.DataFrame) -> str:
     cold_score = 0
     if whip > 1.60:
         cold_score += 1
-    if ra9 > 5.00:
+    if whip > 1.50:
         cold_score += 1
     if k9 < 6.0:
         cold_score += 1
@@ -371,15 +371,11 @@ def annotate_with_streaks(
     """
     result = df.copy()
 
-    def _is_pitcher(pos: str) -> bool:
-        pos_upper = str(pos).upper()
-        return any(p in pos_upper for p in ("SP", "RP", "/P"))
-
     result["streak"] = result.apply(
         lambda row: streak_label(
             player_id=str(row[player_col]),
             daily_df=daily_df,
-            is_pitcher=_is_pitcher(str(row.get(position_col, ""))),
+            is_pitcher=is_pitcher(row.get(position_col, "")),
             reference_date=reference_date,
             advanced_df=advanced_df,
         ),

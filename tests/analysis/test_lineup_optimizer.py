@@ -15,7 +15,9 @@ import pandas as pd
 import pytest
 
 from src.analysis.lineup_optimizer import (
+    _player_top_categories,
     build_daily_report,
+    generate_trade_proposals,
     optimize_daily_lineup,
     recommend_adds,
 )
@@ -1010,3 +1012,78 @@ def test_recommend_adds_rejects_replacement_level_hitter(config: object) -> None
     adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
 
     assert len(adds) == 0, f"Expected 0 adds for a .153 AVG hitter, got {len(adds)}"
+
+
+# ---------------------------------------------------------------------------
+# _player_top_categories: a good (low) WHIP is surfaced as a strength
+# ---------------------------------------------------------------------------
+
+
+def test_player_top_categories_surfaces_good_whip() -> None:
+    good = pd.Series({"whip": 1.05})
+    assert "WHIP" in _player_top_categories(good, ["WHIP"])
+
+
+def test_player_top_categories_excludes_bad_whip() -> None:
+    bad = pd.Series({"whip": 1.60})
+    assert "WHIP" not in _player_top_categories(bad, ["WHIP"])
+
+
+# ---------------------------------------------------------------------------
+# generate_trade_proposals: give_team is MY team, and flippable_loss counts
+# as a weak category that drives proposals
+# ---------------------------------------------------------------------------
+
+
+def test_generate_trade_proposals_give_team_is_my_team() -> None:
+    # Weak cat uses status "flippable_loss" with win_prob 0.50 (above the 0.35
+    # cutoff) so ONLY the status check can flag it as weak — proving the status
+    # vocabulary fix ("trailing" was never emitted; "flippable_loss" is).
+    matchup_summary = [
+        {"category": "W", "status": "safe_win", "win_prob": 0.75},
+        {"category": "K", "status": "flippable_loss", "win_prob": 0.50},
+    ]
+    my_roster = pd.DataFrame(
+        [
+            {
+                "player_id": "mine1",
+                "full_name": "My Ace",
+                "team": "NYM",
+                "position": "SP",
+                "w_pg": 0.8,
+                "k_pg": 2.0,
+                "whip": 1.10,
+            }
+        ]
+    )
+    opp_roster = pd.DataFrame(
+        [
+            {
+                "player_id": "opp1",
+                "full_name": "Their Strikeout Guy",
+                "team": "LAD",
+                "position": "SP",
+                "w_pg": 0.3,
+                "k_pg": 9.0,
+                "whip": 1.20,
+            }
+        ]
+    )
+    league_rosters = {"opp_key": opp_roster}
+    team_names = {"my_key": "My Team", "opp_key": "Opponent"}
+
+    proposals = generate_trade_proposals(
+        matchup_summary,
+        my_roster,
+        league_rosters,
+        team_names,
+        my_team_key="my_key",
+    )
+
+    # A proposal exists → flippable_loss was correctly recognized as weak.
+    assert proposals, "Expected a proposal; flippable_loss should count as weak"
+    p = proposals[0]
+    # give_team must be MY team (the giver), not the opponent.
+    assert p["give_team"] == "My Team"
+    assert p["give_player"] == "My Ace"
+    assert p["receive_team"] == "Opponent"

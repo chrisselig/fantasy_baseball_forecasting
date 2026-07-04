@@ -100,7 +100,7 @@ def _shrink_projection_rates(
         stats_idx = pd.DataFrame()
 
     def _adv(pid: str, col: str) -> float | None:
-        if stats_idx is None or pid not in adv_idx.index or col not in adv_idx.columns:
+        if adv_idx is None or pid not in adv_idx.index or col not in adv_idx.columns:
             return None
         raw = adv_idx.at[pid, col]
         if isinstance(raw, pd.Series):
@@ -237,9 +237,24 @@ def project_week_totals(
         DataFrame with one row per player and projected end-of-week totals.
         Includes all counting stat columns plus computed rate stats.
     """
+    # Normalize player_id to str on both frames so the merge below matches
+    # rows even when the DB hands back numeric IDs on one side.
+    stats_df = stats_df.copy() if stats_df is not None else pd.DataFrame()
+    if "player_id" in stats_df.columns:
+        stats_df["player_id"] = stats_df["player_id"].astype(str)
+    projections_df = projections_df.copy()
+    if "player_id" in projections_df.columns:
+        projections_df["player_id"] = projections_df["player_id"].astype(str)
+
     if advanced_df is not None and not advanced_df.empty:
         projections_df = _shrink_projection_rates(projections_df, stats_df, advanced_df)
     merged = stats_df.merge(projections_df, on="player_id", how="outer")
+
+    # A missing games_per_day must fall back to 1.0 (appears every day), not
+    # 0.0 — otherwise the blanket fillna(0) below would zero the player's
+    # entire remaining-week projection.
+    if "games_per_day" in merged.columns:
+        merged["games_per_day"] = merged["games_per_day"].fillna(1.0)
 
     # Fill NaN for numeric columns to 0 so arithmetic works cleanly.
     merged = merged.fillna(0)

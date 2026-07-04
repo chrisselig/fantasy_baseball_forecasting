@@ -805,3 +805,112 @@ def test_rank_free_agents_penalizes_stacked_position(config: object) -> None:
         f"Expected OF FA to rank higher than C FA when C is stacked. "
         f"OF={of_score:.3f}, C={c_score:.3f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# score_free_agent: a missing (NaN) WHIP is treated as no signal, not elite
+# ---------------------------------------------------------------------------
+
+
+def test_score_free_agent_missing_whip_is_no_signal(config: object) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    roster_no_bench = pd.DataFrame(
+        [
+            _make_player_row(
+                "rp1",
+                eligible_positions=["RP"],
+                slot="RP",
+                overall_score=4.0,
+                whip=1.10,
+            ).to_dict(),
+            _make_player_row(
+                "rp2", eligible_positions=["RP"], slot="RP", overall_score=0.5, whip=2.0
+            ).to_dict(),
+        ]
+    )
+    matchup = _make_matchup_df({"whip": "toss_up"})
+
+    # Pitcher with NO whip data (NaN). Before the fix this defaulted to 0.0 and,
+    # after the lower-is-better inversion, scored as an elite WHIP.
+    pitcher_no_whip = _make_player_row(
+        "fa_nowhip", k=7.0, sv_h=1.0, eligible_positions=["RP"]
+    )
+    pitcher_no_whip["whip"] = float("nan")
+
+    result = score_free_agent(pitcher_no_whip, roster_no_bench, matchup, config)
+    category_scores = cast(dict[str, float], result["category_scores"])
+    assert category_scores.get("whip", 0.0) == 0.0, (
+        f"Missing WHIP must contribute 0, got {category_scores.get('whip')}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# rank_free_agents: positional penalty must not lift NEGATIVE scores
+# ---------------------------------------------------------------------------
+
+
+def test_rank_free_agents_penalty_not_applied_to_negative_scores(
+    config: object,
+) -> None:
+    from src.config import LeagueSettings
+
+    assert isinstance(config, LeagueSettings)
+
+    # Roster stacked at OF (strong OF trio fills all 3 OF slots) and thin at C.
+    roster = pd.DataFrame(
+        [
+            _make_player_row(
+                "c1", eligible_positions=["C"], slot="C", overall_score=6.0
+            ),
+            _make_player_row(
+                "of1", eligible_positions=["OF"], slot="OF", overall_score=8.0
+            ),
+            _make_player_row(
+                "of2", eligible_positions=["OF"], slot="OF", overall_score=7.5
+            ),
+            _make_player_row(
+                "of3", eligible_positions=["OF"], slot="OF", overall_score=7.0
+            ),
+        ]
+    )
+    matchup = _make_matchup_df()
+    callups = pd.DataFrame(columns=["player_id", "days_since_callup"])
+
+    # Two identical, terrible hitters (all zeros) → negative overall_score.
+    # One is OF-eligible (stacked, would be penalized), one C (needed).
+    bad_stats = {
+        "h": 0.0,
+        "hr": 0.0,
+        "sb": 0.0,
+        "bb": 0.0,
+        "fpct": 0.0,
+        "avg": 0.0,
+        "ops": 0.0,
+        "overall_score": 0.0,
+    }
+    fa_of = _make_player_row(
+        "fa_bad_of", eligible_positions=["OF"], **bad_stats
+    ).to_dict()
+    fa_c = _make_player_row("fa_bad_c", eligible_positions=["C"], **bad_stats).to_dict()
+    free_agents = pd.DataFrame([fa_of, fa_c])
+
+    result = rank_free_agents(free_agents, roster, matchup, callups, config)
+    of_score = float(
+        result.loc[result["player_id"] == "fa_bad_of", "overall_score"].iloc[0]
+    )
+    c_score = float(
+        result.loc[result["player_id"] == "fa_bad_c", "overall_score"].iloc[0]
+    )
+
+    # Sanity: the base score is negative so the bug scenario is exercised.
+    assert of_score < 0
+    # Fixed behavior: the surplus penalty is NOT applied to a negative score,
+    # so the stacked-OF player does not leapfrog the needed-C player.
+    # (Buggy behavior multiplied the negative by 0.35, making it less negative
+    # and ranking it HIGHER.)
+    assert of_score <= c_score, (
+        f"Penalty lifted a negative score: OF={of_score:.3f}, C={c_score:.3f}"
+    )
