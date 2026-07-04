@@ -10,10 +10,12 @@ the next pipeline run will fail to authenticate.
 This module:
 1. Compares the current refresh token with what was in the environment at startup
 2. If different, encrypts and writes the new token to GitHub Secrets via the API
-3. Is a no-op when not running in GitHub Actions (GH_TOKEN not set)
+3. Is a no-op when no writeback token is configured (GH_PAT/GH_TOKEN unset)
 
 GitHub API requires:
-  - GH_TOKEN env var: a token with secrets:write permission
+  - GH_PAT env var (preferred): a fine-grained PAT with secrets:write. The
+    default GITHUB_TOKEN (passed as GH_TOKEN) CANNOT write repo secrets, so a
+    dedicated PAT stored as the GH_PAT secret is required for writeback to work.
   - GITHUB_REPOSITORY env var: "owner/repo" (auto-set in Actions)
   - PyNaCl for libsodium encryption
 """
@@ -131,9 +133,15 @@ def maybe_write_back_refresh_token(
     Returns:
         True if the secret was updated, False otherwise.
     """
-    gh_token = os.environ.get("GH_TOKEN", "")
+    # Prefer GH_PAT (a fine-grained PAT with secrets:write) over GH_TOKEN.
+    # The default GITHUB_TOKEN passed as GH_TOKEN CANNOT write repo secrets, so
+    # writeback only works when a dedicated PAT is provided as GH_PAT.
+    gh_token = os.environ.get("GH_PAT", "") or os.environ.get("GH_TOKEN", "")
     if not gh_token:
-        logger.debug("GH_TOKEN not set — skipping token writeback (not in Actions)")
+        logger.debug(
+            "Neither GH_PAT nor GH_TOKEN set — skipping token writeback "
+            "(not in Actions or no PAT configured)"
+        )
         return False
 
     if original_refresh_token is None:

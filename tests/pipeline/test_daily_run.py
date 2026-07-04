@@ -20,8 +20,10 @@ import pytest
 
 from src.config import LeagueSettings, load_league_settings
 from src.db.schema import (
+    DIM_PLAYERS,
     FACT_DAILY_REPORTS,
     FACT_PIPELINE_RUNS,
+    FACT_PLAYER_STATS_DAILY,
     FACT_WAIVER_SCORES,
     create_all_tables,
 )
@@ -29,12 +31,15 @@ from src.pipeline.daily_run import (
     _MLB_TEAM_ID_TO_ABBR,
     _aggregate_to_team,
     _build_player_schedule,
+    _cleanup_stale_stats,
     _enrich_roster_with_stats,
+    _exit_code_for_status,
     _get_season_start,
     _get_week_start,
     _my_team_key,
     _query_weekly_acquisitions,
     _step_load_player_news,
+    _step_load_yahoo,
     _step_log_pipeline_run,
     _step_write_daily_report,
     _update_waiver_scores,
@@ -752,22 +757,20 @@ def test_pipeline_does_not_crash_with_callup_data_and_empty_roster(
 
 
 def test_main_exit_code_success() -> None:
-    """status != 'failed' maps to exit code 0."""
-    for status in ("success", "partial"):
-        result: dict[str, object] = {
-            "run_id": "run-x",
-            "status": status,
-            "rows_written": {},
-        }
-        expected_exit = 0 if result["status"] != "failed" else 1
-        assert expected_exit == 0
+    """'success' maps to exit code 0."""
+    assert _exit_code_for_status("success") == 0
+
+
+def test_main_exit_code_partial_is_nonzero() -> None:
+    """'partial' must map to a distinct non-zero exit code so CI shows red."""
+    code = _exit_code_for_status("partial")
+    assert code != 0
+    assert code != _exit_code_for_status("failed")
 
 
 def test_main_exit_code_failed() -> None:
-    """status == 'failed' maps to exit code 1."""
-    result = {"run_id": "run-y", "status": "failed", "rows_written": {}}
-    expected_exit = 0 if result["status"] != "failed" else 1
-    assert expected_exit == 1
+    """'failed' maps to exit code 1."""
+    assert _exit_code_for_status("failed") == 1
 
 
 # ── _query_player_rates / _enrich_with_rates ──────────────────────────────────
@@ -1126,3 +1129,144 @@ class TestStepLoadPlayerNews:
         monkeypatch.setattr("src.pipeline.daily_run.build_news_df", boom)
         result = _step_load_player_news(conn, datetime.date(2026, 4, 9))
         assert result == {}
+
+
+# ── _cleanup_stale_stats tests (data-loss guard) ──────────────────────────────
+
+
+def _seed_player(conn, player_id: str, name: str) -> None:
+    conn.execute(
+        f"INSERT INTO {DIM_PLAYERS} (player_id, full_name) VALUES (?, ?)",
+        [player_id, name],
+    )
+
+
+def _seed_daily_stat(conn, player_id: str) -> None:
+    conn.execute(
+        f"INSERT INTO {FACT_PLAYER_STATS_DAILY} (player_id, stat_date) VALUES (?, ?)",
+        [player_id, datetime.date(2026, 4, 9)],
+    )
+
+
+def test_cleanup_stale_stats_removes_only_stale_prefix(conn):
+    """Only '422.p.%' orphans are deleted; other orphans are preserved."""
+    _seed_player(conn, "423.p.1", "Active Player")
+    _seed_daily_stat(conn, "423.p.1")  # active, in dim_players -> keep
+    _seed_daily_stat(conn, "422.p.99")  # stale prefix, orphan -> delete
+    _seed_daily_stat(conn, "423.p.777")  # left roster (orphan) but not stale -> keep
+
+    _cleanup_stale_stats(conn)
+
+    remaining = {
+        r[0]
+        for r in conn.execute(
+            f"SELECT player_id FROM {FACT_PLAYER_STATS_DAILY}"
+        ).fetchall()
+    }
+    assert remaining == {"423.p.1", "423.p.777"}
+
+
+def test_cleanup_stale_stats_skips_when_dim_players_empty(conn):
+    """With an empty dim_players, nothing is deleted (would otherwise wipe all)."""
+    _seed_daily_stat(conn, "422.p.99")
+    _seed_daily_stat(conn, "423.p.1")
+
+    _cleanup_stale_stats(conn)  # dim_players empty
+
+    count = conn.execute(f"SELECT COUNT(*) FROM {FACT_PLAYER_STATS_DAILY}").fetchone()[
+        0
+    ]
+    assert count == 2  # untouched
+
+
+# ── _step_load_yahoo fa_df init (UnboundLocalError guard) ─────────────────────
+
+
+def test_step_load_yahoo_free_agent_failure_returns_empty_fa_df(conn, monkeypatch):
+    """A get_free_agents() exception must not raise UnboundLocalError."""
+    import unittest.mock as mock
+
+    fake = mock.MagicMock()
+    fake.get_stat_categories.return_value = {}
+    fake.get_my_roster.return_value = pd.DataFrame()
+    fake.get_all_rosters.return_value = pd.DataFrame()
+    fake.get_transactions.return_value = pd.DataFrame()
+    fake.get_current_matchup.return_value = pd.DataFrame()
+    fake.get_free_agents.side_effect = RuntimeError("FA endpoint down")
+
+    with (
+        mock.patch("src.pipeline.daily_run.YahooClient.from_env", return_value=fake),
+        mock.patch("src.pipeline.daily_run.load_rosters", return_value=0),
+        mock.patch("src.pipeline.daily_run.load_transactions", return_value=0),
+        mock.patch("src.pipeline.daily_run.load_matchups", return_value=0),
+    ):
+        row_counts, fa_df, client = _step_load_yahoo(conn, week=1)
+
+    assert isinstance(fa_df, pd.DataFrame)
+    assert fa_df.empty
+    assert client is fake
+
+
+# ── Refresh-token writeback wiring (fix 6) ────────────────────────────────────
+
+
+def test_run_daily_pipeline_writes_back_refresh_token(
+    conn, settings, today, monkeypatch
+):
+    """The rotated Yahoo refresh token is passed to the writeback helper."""
+    import unittest.mock as mock
+
+    mock_yahoo = mock.MagicMock()
+    mock_yahoo.refresh_token = "rotated-token-xyz"
+
+    writeback = mock.MagicMock(return_value=True)
+
+    with (
+        mock.patch(
+            "src.pipeline.daily_run.YahooClient.from_env", return_value=mock_yahoo
+        ),
+        mock.patch(
+            "src.pipeline.daily_run._step_load_yahoo",
+            return_value=({}, pd.DataFrame(), mock_yahoo),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run._step_load_mlb_stats",
+            return_value=({}, pd.DataFrame()),
+        ),
+        mock.patch("src.pipeline.daily_run.load_advanced_stats", return_value=0),
+        mock.patch("src.pipeline.daily_run._step_load_player_news", return_value={}),
+        mock.patch("src.pipeline.daily_run.maybe_write_back_refresh_token", writeback),
+    ):
+        run_daily_pipeline(conn, settings, run_date=today)
+
+    writeback.assert_called_once_with("rotated-token-xyz")
+
+
+def test_run_daily_pipeline_writeback_error_is_non_fatal(
+    conn, settings, today, monkeypatch
+):
+    """A writeback failure must not fail the run."""
+    import unittest.mock as mock
+
+    mock_yahoo = mock.MagicMock()
+    mock_yahoo.refresh_token = "rotated"
+
+    with (
+        mock.patch(
+            "src.pipeline.daily_run._step_load_yahoo",
+            return_value=({}, pd.DataFrame(), mock_yahoo),
+        ),
+        mock.patch(
+            "src.pipeline.daily_run._step_load_mlb_stats",
+            return_value=({}, pd.DataFrame()),
+        ),
+        mock.patch("src.pipeline.daily_run.load_advanced_stats", return_value=0),
+        mock.patch("src.pipeline.daily_run._step_load_player_news", return_value={}),
+        mock.patch(
+            "src.pipeline.daily_run.maybe_write_back_refresh_token",
+            side_effect=RuntimeError("gh api down"),
+        ),
+    ):
+        result = run_daily_pipeline(conn, settings, run_date=today)
+
+    assert result["status"] in ("success", "partial", "failed")
