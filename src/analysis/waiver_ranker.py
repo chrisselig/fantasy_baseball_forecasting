@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.analysis.positions import is_pitcher
 from src.config import LeagueSettings
 
 # Status weight mapping for category scoring.
@@ -81,9 +82,6 @@ _POSITION_SLOT_MAP: dict[str, list[str]] = {
 # Categories where "lower is better" (rate stats where we want to minimize)
 _LOWER_BETTER: set[str] = {"whip"}
 
-# Pitcher position markers (used for is_pitcher classification)
-_PITCHER_POSITIONS: set[str] = {"SP", "RP", "P"}
-
 # Categories and the per-game columns they map to in player rows.
 _CAT_TO_STAT: dict[str, str] = {
     "h": "h",
@@ -117,35 +115,38 @@ _DISPLAY_STAT_COLS: list[str] = [
 ]
 
 
-def _get_stat_value(row: pd.Series[Any], cat: str) -> float:
-    """Safely get a stat value from a row, defaulting to 0.0."""
+def _get_stat_value_or_none(row: pd.Series[Any], cat: str) -> float | None:
+    """Return a stat value from a row, or None when it is missing/NaN.
+
+    Distinguishes a genuine 0.0 (player has the stat, it's zero) from a
+    missing signal (column absent, NaN, or unparseable). Callers use this to
+    avoid treating "no data" as best-possible in lower-is-better categories.
+    """
     col = _CAT_TO_STAT.get(cat, cat)
     if col in row.index:
         val = row[col]
         if pd.isna(val):
-            return 0.0
+            return None
         try:
             return float(val)
         except (TypeError, ValueError):
-            return 0.0
-    return 0.0
+            return None
+    return None
+
+
+def _get_stat_value(row: pd.Series[Any], cat: str) -> float:
+    """Safely get a stat value from a row, defaulting to 0.0."""
+    val = _get_stat_value_or_none(row, cat)
+    return val if val is not None else 0.0
 
 
 def _is_pitcher(positions: Any) -> bool:
-    """Return True when the player's positions include SP/RP/P."""
-    if positions is None:
-        return False
-    if isinstance(positions, np.ndarray):
-        # Handle 0-d arrays (scalar wrapped in ndarray)
-        if positions.ndim == 0:
-            return str(positions).upper() in _PITCHER_POSITIONS
-        return bool({str(p).upper() for p in positions} & _PITCHER_POSITIONS)
-    if isinstance(positions, (list, tuple)):
-        return bool({str(p).upper() for p in positions} & _PITCHER_POSITIONS)
-    if isinstance(positions, str):
-        parts = [p.strip().upper() for p in positions.replace("/", ",").split(",")]
-        return bool(set(parts) & _PITCHER_POSITIONS)
-    return False
+    """Return True when the player's positions include SP/RP/P.
+
+    Delegates to the shared ``src.analysis.positions`` helper so pitcher
+    detection stays consistent across modules.
+    """
+    return is_pitcher(positions)
 
 
 def _positions_str(positions: Any) -> str:
@@ -262,7 +263,16 @@ def score_free_agent(
         status = status_lookup.get(cat, "toss_up")
         weight = _STATUS_WEIGHTS.get(status, 1.0)
 
-        player_val = _get_stat_value(player_row, cat)
+        is_lower_better = direction == "lowest" or cat in _LOWER_BETTER
+
+        raw_player_val = _get_stat_value_or_none(player_row, cat)
+        # For lower-is-better cats a missing value must count as no signal
+        # (contribution 0). Defaulting it to 0.0 would look like a perfect
+        # WHIP after the sign inversion and rank the player as elite.
+        if is_lower_better and raw_player_val is None:
+            category_scores[cat] = 0.0
+            continue
+        player_val = raw_player_val if raw_player_val is not None else 0.0
 
         drop_val = 0.0
         if recommended_drop_id and not my_roster_df.empty:
@@ -271,7 +281,7 @@ def score_free_agent(
                 drop_val = _get_stat_value(drop_rows.iloc[0], cat)
 
         delta = player_val - drop_val
-        if direction == "lowest" or cat in _LOWER_BETTER:
+        if is_lower_better:
             delta = -delta
 
         sigma = sigmas.get(cat, 1.0) or 1.0
@@ -707,7 +717,12 @@ def rank_free_agents(
         result["_pos_multiplier"] = result["position"].apply(
             lambda p: _positional_need_multiplier(p, need_map)
         )
-        result["overall_score"] = result["overall_score"] * result["_pos_multiplier"]
+        # Only discount positive scores. Multiplying a negative score by a
+        # <1.0 penalty would make a bad player at a stacked position rank
+        # HIGHER (less negative), which is backwards.
+        score = result["overall_score"]
+        penalized = score * result["_pos_multiplier"]
+        result["overall_score"] = score.where(score <= 0, penalized)
         result.drop(columns=["_pos_multiplier"], inplace=True)
 
     result = result.sort_values("overall_score", ascending=False).reset_index(drop=True)
