@@ -53,7 +53,9 @@ def cleanup_bad_weeks() -> None:
             WHERE week_number < 1 OR week_number > 26
                OR season != {_CURRENT_SEASON}
         """)
-        deleted = result.fetchone()[0]
+        deleted_row = result.fetchone()
+        assert deleted_row is not None
+        deleted = deleted_row[0]
         logger.info("Deleted %d rows.", deleted)
 
 

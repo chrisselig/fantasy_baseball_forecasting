@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime
 import json
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -705,7 +705,7 @@ def test_recommend_adds_handles_ndarray_eligible_positions(config: object) -> No
     # Force fallback path: drop the explicit position column and swap the
     # eligible_positions list for a numpy array (what DuckDB VARCHAR[] yields).
     roster = roster.drop(columns=["position"])
-    roster.at[0, "eligible_positions"] = np.array(["SP"], dtype=object)
+    roster.at[0, "eligible_positions"] = cast(Any, np.array(["SP"], dtype=object))
 
     adds = recommend_adds(waiver, roster, acquisitions_used=0, config=config)
 

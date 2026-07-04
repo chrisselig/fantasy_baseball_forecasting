@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest import mock
 
+import pytest
+
 from src.pipeline.token_refresh import (
     _get_repo_public_key,
     _update_github_secret,
@@ -11,14 +13,14 @@ from src.pipeline.token_refresh import (
 )
 
 
-def test_maybe_write_back_no_gh_token(monkeypatch):
+def test_maybe_write_back_no_gh_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """No-op when GH_TOKEN is not set."""
     monkeypatch.delenv("GH_TOKEN", raising=False)
     result = maybe_write_back_refresh_token("new_token", "old_token")
     assert result is False
 
 
-def test_maybe_write_back_token_unchanged(monkeypatch):
+def test_maybe_write_back_token_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     """No-op when token has not changed."""
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
@@ -26,7 +28,7 @@ def test_maybe_write_back_token_unchanged(monkeypatch):
     assert result is False
 
 
-def test_maybe_write_back_no_github_repo(monkeypatch):
+def test_maybe_write_back_no_github_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     """Logs warning and returns False when GITHUB_REPOSITORY not set."""
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
     monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
@@ -34,7 +36,7 @@ def test_maybe_write_back_no_github_repo(monkeypatch):
     assert result is False
 
 
-def test_maybe_write_back_pynacl_missing(monkeypatch):
+def test_maybe_write_back_pynacl_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Returns False gracefully when PyNaCl is not installed."""
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
@@ -47,7 +49,7 @@ def test_maybe_write_back_pynacl_missing(monkeypatch):
     assert result is False
 
 
-def test_maybe_write_back_api_failure(monkeypatch):
+def test_maybe_write_back_api_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """Returns False (non-fatal) when GitHub API call fails."""
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
@@ -60,7 +62,7 @@ def test_maybe_write_back_api_failure(monkeypatch):
     assert result is False
 
 
-def test_maybe_write_back_success(monkeypatch):
+def test_maybe_write_back_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Returns True when token is successfully updated."""
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
@@ -74,7 +76,7 @@ def test_maybe_write_back_success(monkeypatch):
     )
 
 
-def test_get_repo_public_key_calls_api():
+def test_get_repo_public_key_calls_api() -> None:
     """_get_repo_public_key makes the correct API call."""
     mock_response = mock.MagicMock()
     mock_response.json.return_value = {"key_id": "123", "key": "base64key"}
@@ -92,7 +94,7 @@ def test_get_repo_public_key_calls_api():
     assert "public-key" in call_url
 
 
-def test_update_github_secret_calls_api():
+def test_update_github_secret_calls_api() -> None:
     """_update_github_secret encrypts and PUTs to the API."""
     mock_get_resp = mock.MagicMock()
     mock_get_resp.json.return_value = {
@@ -125,7 +127,9 @@ def test_update_github_secret_calls_api():
     assert put_body["key_id"] == "456"
 
 
-def test_maybe_write_back_uses_env_var_as_original(monkeypatch):
+def test_maybe_write_back_uses_env_var_as_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Uses YAHOO_REFRESH_TOKEN env var as original when not provided explicitly."""
     monkeypatch.setenv("GH_TOKEN", "ghp_test")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")

@@ -26,6 +26,7 @@ import random
 import sys
 import warnings
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import duckdb
@@ -87,7 +88,11 @@ def _derive_run_params(
 # (full_name, mlb_id, fg_id, team, eligible_positions, bats, throws)
 # fg_id must match the IDfg column returned by pybaseball.batting/pitching_stats.
 
-_PLAYER_POOL: list[tuple] = [
+# A single player row and a roster assignment ((slot, player) pairs).
+_Player = tuple[str, int, str, str, list[str], str, str]
+_Roster = list[tuple[str, _Player]]
+
+_PLAYER_POOL: list[_Player] = [
     # ── Catchers ──────────────────────────────────────────────────────────────
     ("William Contreras", 661388, "24204", "MIL", ["C"], "R", "R"),
     ("Adley Rutschman", 668939, "26416", "BAL", ["C"], "S", "R"),
@@ -180,7 +185,7 @@ _ACTIVE_SLOTS = [
 _BENCH_SLOTS = ["BN"] * 4
 
 
-def _can_fill(slot: str, player: tuple) -> bool:
+def _can_fill(slot: str, player: _Player) -> bool:
     positions = player[4]
     if slot in ("C", "1B", "2B", "3B", "SS", "OF"):
         return slot in positions
@@ -195,9 +200,9 @@ def _can_fill(slot: str, player: tuple) -> bool:
     return True  # BN
 
 
-def _assign_roster(pool: list[tuple], slots: list[str]) -> list[tuple[str, tuple]]:
+def _assign_roster(pool: list[_Player], slots: list[str]) -> _Roster:
     remaining = list(pool)
-    assigned: list[tuple[str, tuple]] = []
+    assigned: _Roster = []
     for slot in slots:
         for i, p in enumerate(remaining):
             if _can_fill(slot, p):
@@ -207,7 +212,7 @@ def _assign_roster(pool: list[tuple], slots: list[str]) -> list[tuple[str, tuple
     return assigned
 
 
-def build_rosters(rng: random.Random) -> tuple[list, list]:
+def build_rosters(rng: random.Random) -> tuple[_Roster, _Roster]:
     """Randomly pick and assign two full teams from the player pool."""
     catchers = [p for p in _PLAYER_POOL if "C" in p[4]]
     first_base = [p for p in _PLAYER_POOL if "1B" in p[4]]
@@ -220,7 +225,7 @@ def build_rosters(rng: random.Random) -> tuple[list, list]:
 
     used: set[int] = set()
 
-    def pick_unique(pool: list, n: int) -> list:
+    def pick_unique(pool: list[_Player], n: int) -> list[_Player]:
         available = [p for p in pool if p[1] not in used]
         rng.shuffle(available)
         chosen = available[:n]
@@ -228,8 +233,8 @@ def build_rosters(rng: random.Random) -> tuple[list, list]:
             used.add(p[1])
         return chosen
 
-    def build_pool() -> list[tuple]:
-        team: list[tuple] = []
+    def build_pool() -> list[_Player]:
+        team: list[_Player] = []
         team += pick_unique(catchers, 1)
         team += pick_unique(first_base, 1)
         team += pick_unique(second_base, 1)
@@ -289,10 +294,10 @@ def _fetch_real_stats(season: int) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _match_player_stats(
-    player: tuple,
+    player: _Player,
     bat_df: pd.DataFrame,
     pit_df: pd.DataFrame,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Return a stat dict for *player* from pybaseball DataFrames.
 
     Attempts to match by fg_id first, then by full_name.  Returns None if
@@ -336,7 +341,7 @@ def _match_player_stats(
     return _map_batter_row(row)
 
 
-def _map_batter_row(row: pd.Series) -> dict:
+def _map_batter_row(row: pd.Series) -> dict[str, Any]:
     """Map a raw pybaseball batting row to fact_player_stats_daily columns."""
 
     def g(col: str, default: float = 0.0) -> float:
@@ -390,7 +395,7 @@ def _map_batter_row(row: pd.Series) -> dict:
     }
 
 
-def _map_pitcher_row(row: pd.Series) -> dict:
+def _map_pitcher_row(row: pd.Series) -> dict[str, Any]:
     """Map a raw pybaseball pitching row to fact_player_stats_daily columns."""
 
     def g(col: str, default: float = 0.0) -> float:
@@ -443,8 +448,8 @@ def _map_pitcher_row(row: pd.Series) -> dict:
 
 def populate_db(
     conn: duckdb.DuckDBPyConnection,
-    my_roster: list,
-    opp_roster: list,
+    my_roster: _Roster,
+    opp_roster: _Roster,
     bat_df: pd.DataFrame,
     pit_df: pd.DataFrame,
     run_date: datetime.date,
@@ -457,7 +462,7 @@ def populate_db(
 
     # Deduplicate players across both rosters
     seen: set[int] = set()
-    players: list[tuple] = []
+    players: list[_Player] = []
     for _, p in my_roster + opp_roster:
         if p[1] not in seen:
             players.append(p)
@@ -632,7 +637,7 @@ def populate_db(
 # ── Report printer ────────────────────────────────────────────────────────────
 
 
-def print_report(report: dict, conn: duckdb.DuckDBPyConnection) -> None:
+def print_report(report: dict[str, Any], conn: duckdb.DuckDBPyConnection) -> None:
     print(f"\n{'═' * 62}")
     print(
         f"  DAILY REPORT — {report.get('report_date', '?')}  (Week {report.get('week_number', '?')})"
@@ -862,7 +867,7 @@ def _ensure_motherduck_db() -> None:
 
 def _run_pipeline(
     conn: duckdb.DuckDBPyConnection,
-    my_roster: list,
+    my_roster: _Roster,
     run_date: datetime.date,
     dump_json: bool,
 ) -> None:

@@ -46,7 +46,7 @@ import sys
 def _load_dotenv() -> None:
     """Load .env file if python-dotenv is available and a .env file exists."""
     try:
-        from dotenv import load_dotenv  # type: ignore[import-untyped]
+        from dotenv import load_dotenv
 
         load_dotenv()
     except ImportError:
@@ -72,7 +72,7 @@ def main() -> None:
     print()
 
     try:
-        from yahoo_oauth import OAuth2  # type: ignore[import-untyped]
+        from yahoo_oauth import OAuth2
     except ImportError:
         print(
             "ERROR: yahoo_oauth is not installed.\n       Run: pip install yahoo-oauth",
