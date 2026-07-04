@@ -1,4 +1,4 @@
-# Code Conventinos Command
+# Code Conventions Command
 
 Carefully perform a comprehensive code review of $ARGUMENTS.
 
