@@ -98,27 +98,50 @@ from the minor leagues and players with improving roles.
 
 ```
 fantasy_baseball_forecasting/
+├── .github/workflows/
+│   ├── ci.yml                     # CI (ruff + mypy + pytest) on PRs; deploy on push to main
+│   ├── daily_pipeline.yml         # Cron pipeline: runs daily at 9am MT
+│   ├── backfill_stats.yml         # Manual: backfill daily MLB stats for a date range
+│   ├── seed_data.yml              # Manual: seed MotherDuck with a 2025 simulation dataset
+│   └── debug_projections.yml      # Manual: dump projection debug output
 ├── config/
 │   └── league_settings.yaml       # League configuration
+├── scripts/                       # Standalone ops scripts (auth, backfill, seed, debug)
 ├── src/
+│   ├── config.py                 # Load league_settings.yaml + env config helpers
 │   ├── api/
 │   │   ├── yahoo_client.py        # Yahoo OAuth + API calls
-│   │   └── mlb_client.py          # MLB transactions, Statcast, news feeds
+│   │   └── mlb_client.py          # MLB Stats API, Statcast, minor league data
 │   ├── db/
 │   │   ├── connection.py          # MotherDuck connection management
 │   │   ├── schema.py              # Table creation and migrations
-│   │   └── loaders.py             # ETL: API responses → MotherDuck tables
+│   │   ├── loaders_yahoo.py       # ETL: Yahoo API responses → MotherDuck
+│   │   ├── loaders_mlb.py         # ETL: MLB stats/schedule → MotherDuck
+│   │   ├── loaders_news.py        # ETL: player news → fact_player_news
+│   │   └── loaders_advanced.py    # ETL: Statcast/advanced metrics → MotherDuck
 │   ├── analysis/
 │   │   ├── matchup_analyzer.py    # Category projection and win probability
 │   │   ├── waiver_ranker.py       # Free agent scoring and ranking
-│   │   └── lineup_optimizer.py    # Daily lineup + add/drop recommendations
+│   │   ├── lineup_optimizer.py    # Daily lineup + add/drop recommendations
+│   │   ├── hot_cold.py            # Rolling hot/cold streak detection
+│   │   ├── news.py                # News sentiment/impact tagging
+│   │   └── shrinkage.py           # Regression-to-mean for small-sample stats
+│   ├── pipeline/
+│   │   ├── daily_run.py           # GitHub Actions pipeline entry point
+│   │   └── token_refresh.py       # Rotate + write back Yahoo OAuth tokens
 │   └── app/
 │       ├── app.py                 # Shiny for Python app entry point
 │       ├── ui.py                  # UI layout and components
-│       └── server.py              # Reactive server logic
+│       ├── server.py              # Reactive server logic (read-only from MotherDuck)
+│       └── stubs.py               # Mock data for dev/offline fallback
+├── tests/                         # Unit and integration tests (pytest)
 ├── docs/
-│   └── project_description.md
-├── requirements.txt
+│   ├── project_description.md     # Full architecture, schema, module overview (canonical)
+│   ├── ai_automation_plan.md      # AI automation roadmap
+│   └── development_plan.md        # Build plan and milestones
+├── app.py                         # shinyapps.io entry shim (re-exports src/app/app.py)
+├── pyproject.toml                 # Project metadata, dependencies, tooling config
+├── requirements.txt               # Deployment dependencies for shinyapps.io
 └── README.md
 ```
 
@@ -326,29 +349,40 @@ CREATE TABLE fact_projections (
 
 ### Data Flow
 
+The daily pipeline (`src/pipeline/daily_run.py`, run by the
+`daily_pipeline.yml` GitHub Actions cron) orchestrates ingestion, analysis,
+and report generation. The Shiny app is read-only and only reads from MotherDuck.
+
 ```
-Yahoo API  ──►  yahoo_client.py  ──►  MotherDuck (fact_rosters, fact_transactions)
-MLB API    ──►  mlb_client.py    ──►  MotherDuck (dim_players, fact_player_stats_daily)
-FanGraphs  ──►  projections.py   ──►  MotherDuck (fact_projections)
+Yahoo API  ──►  yahoo_client.py  ──►  loaders_yahoo.py  ──►  MotherDuck (fact_rosters, fact_transactions, fact_matchups)
+MLB API    ──►  mlb_client.py    ──►  loaders_mlb.py    ──►  MotherDuck (dim_players, fact_player_stats_daily)
+News feeds ──►  mlb_client.py    ──►  loaders_news.py   ──►  MotherDuck (fact_player_news)
+Statcast   ──►  pybaseball       ──►  loaders_advanced.py ─►  MotherDuck (fact_player_advanced_stats)
+                                            │
+                       pipeline/daily_run.py orchestrates the above,
+                       then runs analysis/ (matchup, waiver, lineup, …)
+                       and writes fact_projections + fact_daily_reports
                                             │
                                             ▼
-                              analysis/ modules query MotherDuck
-                                            │
-                                            ▼
-                                    Shiny app renders results
+                              Shiny app reads MotherDuck (read-only) and renders results
 ```
 
 ---
 
 ## Deployment: Shiny for Python on shinyapps.io
 
-The app will be built using **Shiny for Python** (`shiny` package) and deployed to
-shinyapps.io via `rsconnect-python`.
+The app is built with **Shiny for Python** (`shiny` package) and deployed to
+shinyapps.io via `rsconnect-python`. Deployment is automated: the `ci.yml`
+GitHub Actions workflow runs the quality gates and, on every push to `main`,
+deploys the app to shinyapps.io.
 
 **Daily refresh strategy:**
-- App triggers a data refresh on first load each day (or on a schedule via a background task)
-- Yahoo API token stored as an environment variable / secret on shinyapps.io
-- Cached data stored between sessions to minimize API calls
+- Data is refreshed by the `daily_pipeline.yml` GitHub Actions cron
+  (`src/pipeline/daily_run.py`), which runs daily at 9am MT — **not** an
+  in-app scheduler. The Shiny app is read-only and only reads from MotherDuck.
+- `MOTHERDUCK_TOKEN` is provided to the app at deploy time (CI writes it into
+  `_deploy_config.py`, which `app.py` imports); Yahoo credentials live only in
+  the pipeline workflow secrets.
 
 **Key UI views:**
 1. **Dashboard** — Daily command center:
@@ -374,8 +408,32 @@ shinyapps.io via `rsconnect-python`.
 | Statcast data | `pybaseball` |
 | Shiny app framework | `shiny` (Shiny for Python) |
 | Deployment | `rsconnect-python` |
-| Scheduling / caching | `apscheduler`, `diskcache` |
+| Pipeline scheduling | GitHub Actions (cron) — no in-app scheduler |
 | Data warehouse | `duckdb` + MotherDuck cloud |
+| Testing / linting | `pytest`, `pytest-cov`, `ruff`, `mypy` |
+
+---
+
+## Development
+
+Set up the virtual environment and install the project with dev extras:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Run the quality gates (all must pass before committing / opening a PR):
+
+```bash
+ruff format .      # format
+ruff check .       # lint
+mypy .             # type-check src/, tests/, and scripts/
+pytest -q          # run the test suite
+```
+
+CI (`.github/workflows/ci.yml`) runs these same checks on every pull request to
+`main`, and on push to `main` it also deploys the app to shinyapps.io.
 
 ---
 
