@@ -21,7 +21,7 @@ from shiny import Inputs, Outputs, Session, reactive, render, ui
 from src.analysis.hot_cold import annotate_with_streaks, match_win_probability
 from src.analysis.lineup_optimizer import _position_is_pitcher
 from src.config import load_league_settings
-from src.db.connection import managed_connection
+from src.db.connection import run_shared
 from src.db.schema import (
     DIM_PLAYERS,
     FACT_DAILY_REPORTS,
@@ -88,7 +88,28 @@ _STATUS_LABEL: dict[str, str] = {
     "safe_loss": "Safe Loss",
 }
 
-_PITCHER_SLOTS = frozenset({"SP", "SP1", "SP2", "RP", "RP1", "RP2", "P", "P1", "P2"})
+
+def _current_season_year() -> int:
+    """Return the active MLB season year.
+
+    Derived from the current date so season-scoped queries do not hardcode a
+    year. Matches the convention used by ``_load_available_weeks``.
+    """
+    import datetime as _dt
+
+    return _dt.date.today().year
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    """Coerce a value to float, returning ``default`` for None/NaN/non-numeric.
+
+    Safer than ``float(...)`` for report fields that may be explicit None or
+    NaN, which would otherwise raise ``TypeError``.
+    """
+    result = pd.to_numeric(value, errors="coerce")
+    if pd.isna(result):
+        return default
+    return float(result)
 
 
 # Tooltip text for every roster column. Each entry is a single string with
@@ -594,90 +615,96 @@ def _load_yahoo_matchup_stats(week: int | None = None) -> dict[str, dict[str, fl
     Returns a dict ``{"mine": {cat: val, ...}, "opp": {cat: val, ...}}``.
     """
     empty: dict[str, dict[str, float]] = {"mine": {}, "opp": {}}
+    team_key = _get_my_team_key()
+
+    def _op(conn: duckdb.DuckDBPyConnection) -> dict[str, dict[str, float]]:
+        if week is not None:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM {FACT_MATCHUPS}
+                WHERE (team_id_home = ? OR team_id_away = ?)
+                  AND week_number = ?
+                ORDER BY week_number DESC
+                LIMIT 1
+            """,
+                [team_key, team_key, week],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM {FACT_MATCHUPS}
+                WHERE (team_id_home = ? OR team_id_away = ?)
+                ORDER BY week_number DESC
+                LIMIT 1
+            """,
+                [team_key, team_key],
+            ).fetchone()
+        if not row:
+            return empty
+        cols = [
+            desc[0]
+            for desc in conn.execute(
+                f"SELECT * FROM {FACT_MATCHUPS} LIMIT 0"
+            ).description
+        ]
+        data = dict(zip(cols, row, strict=False))
+
+        is_home = data.get("team_id_home") == team_key
+        mine_map = _YAHOO_STAT_MAP_HOME if is_home else _YAHOO_STAT_MAP_AWAY
+        opp_map = _YAHOO_STAT_MAP_AWAY if is_home else _YAHOO_STAT_MAP_HOME
+
+        mine: dict[str, float] = {}
+        opp: dict[str, float] = {}
+        for col, cat in mine_map.items():
+            v = data.get(col)
+            if v is not None:
+                try:
+                    mine[cat] = float(v)
+                except (ValueError, TypeError):
+                    pass
+        for col, cat in opp_map.items():
+            v = data.get(col)
+            if v is not None:
+                try:
+                    opp[cat] = float(v)
+                except (ValueError, TypeError):
+                    pass
+        return {"mine": mine, "opp": opp}
+
     try:
-        team_key = _get_my_team_key()
-        with managed_connection() as conn:
-            if week is not None:
-                row = conn.execute(
-                    f"""
-                    SELECT *
-                    FROM {FACT_MATCHUPS}
-                    WHERE (team_id_home = ? OR team_id_away = ?)
-                      AND week_number = ?
-                    ORDER BY week_number DESC
-                    LIMIT 1
-                """,
-                    [team_key, team_key, week],
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    f"""
-                    SELECT *
-                    FROM {FACT_MATCHUPS}
-                    WHERE (team_id_home = ? OR team_id_away = ?)
-                    ORDER BY week_number DESC
-                    LIMIT 1
-                """,
-                    [team_key, team_key],
-                ).fetchone()
-            if not row:
-                return empty
-            cols = [
-                desc[0]
-                for desc in conn.execute(
-                    f"SELECT * FROM {FACT_MATCHUPS} LIMIT 0"
-                ).description
-            ]
-            data = dict(zip(cols, row, strict=False))
-
-            is_home = data.get("team_id_home") == team_key
-            mine_map = _YAHOO_STAT_MAP_HOME if is_home else _YAHOO_STAT_MAP_AWAY
-            opp_map = _YAHOO_STAT_MAP_AWAY if is_home else _YAHOO_STAT_MAP_HOME
-
-            mine: dict[str, float] = {}
-            opp: dict[str, float] = {}
-            for col, cat in mine_map.items():
-                v = data.get(col)
-                if v is not None:
-                    try:
-                        mine[cat] = float(v)
-                    except (ValueError, TypeError):
-                        pass
-            for col, cat in opp_map.items():
-                v = data.get(col)
-                if v is not None:
-                    try:
-                        opp[cat] = float(v)
-                    except (ValueError, TypeError):
-                        pass
-            return {"mine": mine, "opp": opp}
-    except Exception as exc:
-        logger.warning("Could not load Yahoo matchup stats: %s", exc)
+        return run_shared(_op)
+    except Exception:
+        logger.warning("Could not load Yahoo matchup stats", exc_info=True)
         return empty
 
 
 def _load_data_freshness() -> dict[str, object]:
     """Query when the last successful pipeline run completed."""
-    try:
-        with managed_connection() as conn:
-            row = conn.execute("""
-                SELECT report_date, generated_at
-                FROM fact_daily_reports
-                ORDER BY report_date DESC
-                LIMIT 1
-            """).fetchone()
-            if row and row[0]:
-                import datetime
 
-                report_date = str(row[0])
-                generated_at = str(row[1]) if row[1] else None
-                is_stale = report_date != datetime.date.today().isoformat()
-                return {
-                    "generated_at": generated_at,
-                    "report_date": report_date,
-                    "is_stale": is_stale,
-                    "is_offline": False,
-                }
+    def _op(conn: duckdb.DuckDBPyConnection) -> Any:
+        return conn.execute("""
+            SELECT report_date, generated_at
+            FROM fact_daily_reports
+            ORDER BY report_date DESC
+            LIMIT 1
+        """).fetchone()
+
+    try:
+        row = run_shared(_op)
+        if row and row[0]:
+            import datetime
+
+            report_date = str(row[0])
+            generated_at = str(row[1]) if row[1] else None
+            is_stale = report_date != datetime.date.today().isoformat()
+            return {
+                "generated_at": generated_at,
+                "report_date": report_date,
+                "is_stale": is_stale,
+                "is_offline": False,
+            }
     except Exception as exc:
         logger.warning("Could not load data freshness: %s", exc)
         return {
@@ -739,25 +766,25 @@ def _load_available_weeks() -> dict[str, str]:
     so the dropdown reads naturally.
     """
     weeks: dict[str, str] = {"latest": "Latest"}
-    try:
-        with managed_connection() as conn:
-            import datetime as _dt
+    current_season = _current_season_year()
 
-            current_season = _dt.date.today().year
-            rows = conn.execute(
-                f"""
-                SELECT DISTINCT week_number
-                FROM {FACT_DAILY_REPORTS}
-                WHERE week_number BETWEEN 1 AND 26
-                  AND season = ?
-                ORDER BY week_number ASC
-            """,
-                [current_season],
-            ).fetchall()
-            for (wk,) in rows:
-                weeks[str(wk)] = f"Week {wk}"
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load available weeks: %s", exc)
+    def _op(conn: duckdb.DuckDBPyConnection) -> list[Any]:
+        return conn.execute(
+            f"""
+            SELECT DISTINCT week_number
+            FROM {FACT_DAILY_REPORTS}
+            WHERE week_number BETWEEN 1 AND 26
+              AND season = ?
+            ORDER BY week_number ASC
+        """,
+            [current_season],
+        ).fetchall()
+
+    try:
+        for (wk,) in run_shared(_op):
+            weeks[str(wk)] = f"Week {wk}"
+    except Exception:
+        logger.warning("Could not load available weeks", exc_info=True)
     return weeks
 
 
@@ -768,74 +795,88 @@ def _load_daily_report(week: int | None = None) -> dict[str, Any]:
         week: If provided, load the latest report for that week.
               If None, load the most recent report overall.
     """
+
+    def _op(conn: duckdb.DuckDBPyConnection) -> Any:
+        if week is not None:
+            return conn.execute(
+                f"""
+                SELECT report_json
+                FROM {FACT_DAILY_REPORTS}
+                WHERE week_number = ?
+                ORDER BY report_date DESC
+                LIMIT 1
+            """,
+                [week],
+            ).fetchone()
+        return conn.execute(f"""
+            SELECT report_json
+            FROM {FACT_DAILY_REPORTS}
+            ORDER BY report_date DESC
+            LIMIT 1
+        """).fetchone()
+
     try:
-        with managed_connection() as conn:
-            if week is not None:
-                result = conn.execute(
-                    f"""
-                    SELECT report_json
-                    FROM {FACT_DAILY_REPORTS}
-                    WHERE week_number = ?
-                    ORDER BY report_date DESC
-                    LIMIT 1
-                """,
-                    [week],
-                ).fetchone()
-            else:
-                result = conn.execute(f"""
-                    SELECT report_json
-                    FROM {FACT_DAILY_REPORTS}
-                    ORDER BY report_date DESC
-                    LIMIT 1
-                """).fetchone()
-            if result and result[0]:
-                return dict(json.loads(str(result[0])))
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load daily report from DB: %s", exc)
+        result = run_shared(_op)
+        if result and result[0]:
+            return dict(json.loads(str(result[0])))
+    except Exception:
+        logger.warning("Could not load daily report from DB", exc_info=True)
     return {}
 
 
 def _load_recent_daily_stats(window_days: int = 10) -> pd.DataFrame:
     """Load recent daily stats for streak computation."""
-    try:
-        with managed_connection() as conn:
-            df: pd.DataFrame = conn.execute(f"""
-                SELECT *
+
+    def _op(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+        return conn.execute(f"""
+            SELECT *
+            FROM {FACT_PLAYER_STATS_DAILY}
+            WHERE stat_date >= (
+                SELECT MAX(stat_date) - INTERVAL '{window_days} days'
                 FROM {FACT_PLAYER_STATS_DAILY}
-                WHERE stat_date >= (
-                    SELECT MAX(stat_date) - INTERVAL '{window_days} days'
-                    FROM {FACT_PLAYER_STATS_DAILY}
-                )
-                ORDER BY player_id, stat_date
-            """).fetchdf()
-            return df
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load daily stats for streaks: %s", exc)
+            )
+            ORDER BY player_id, stat_date
+        """).fetchdf()
+
+    try:
+        return run_shared(_op)
+    except Exception:
+        logger.warning("Could not load daily stats for streaks", exc_info=True)
     return pd.DataFrame()
 
 
-def _load_roster() -> pd.DataFrame:
-    """Load current roster from MotherDuck with streak annotations."""
+def _load_roster(
+    daily_df: pd.DataFrame | None = None,
+    adv_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Load current roster from MotherDuck with streak annotations.
+
+    Args:
+        daily_df: Recent daily stats used for streak computation. Loaded on
+            demand when None; callers that already hold the frame should pass
+            it to avoid a redundant query.
+        adv_df: Advanced-stats frame used for streak context. Loaded on demand
+            when None.
+    """
     team_key = _get_my_team_key()
     if not team_key:
         return _empty_roster_df()
 
-    try:
-        with managed_connection() as conn:
-            snap_row = conn.execute(
-                f"SELECT MAX(snapshot_date) FROM {FACT_ROSTERS} WHERE team_id = ?",
-                [team_key],
-            ).fetchone()
-            if not snap_row or not snap_row[0]:
-                return _empty_roster_df()
-            latest_snapshot = snap_row[0]
+    def _op(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+        snap_row = conn.execute(
+            f"SELECT MAX(snapshot_date) FROM {FACT_ROSTERS} WHERE team_id = ?",
+            [team_key],
+        ).fetchone()
+        if not snap_row or not snap_row[0]:
+            return _empty_roster_df()
+        latest_snapshot = snap_row[0]
 
-            import datetime as _dt
+        import datetime as _dt
 
-            week_start = latest_snapshot - _dt.timedelta(days=latest_snapshot.weekday())
+        week_start = latest_snapshot - _dt.timedelta(days=latest_snapshot.weekday())
 
-            df: pd.DataFrame = conn.execute(
-                f"""
+        return conn.execute(
+            f"""
                 SELECT
                     r.roster_slot        AS slot,
                     p.player_id,
@@ -899,22 +940,29 @@ def _load_roster() -> pd.DataFrame:
                   AND r.snapshot_date = ?
                 ORDER BY r.roster_slot
             """,
-                [week_start, team_key, latest_snapshot],
-            ).fetchdf()
+            [week_start, team_key, latest_snapshot],
+        ).fetchdf()
 
-            if not df.empty:
-                daily_df = _load_recent_daily_stats()
-                if not daily_df.empty and "player_id" in df.columns:
-                    adv_df, _, _ = _load_advanced_with_league_avgs()
-                    df = annotate_with_streaks(
-                        df, daily_df, advanced_df=adv_df if not adv_df.empty else None
-                    )
-                elif "streak" not in df.columns:
-                    df["streak"] = "—"
-                return df
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load roster from DB: %s", exc)
-    return _empty_roster_df()
+    try:
+        df = run_shared(_op)
+    except Exception:
+        logger.warning("Could not load roster from DB", exc_info=True)
+        return _empty_roster_df()
+
+    if df.empty:
+        return _empty_roster_df()
+
+    if daily_df is None:
+        daily_df = _load_recent_daily_stats()
+    if not daily_df.empty and "player_id" in df.columns:
+        if adv_df is None:
+            adv_df, _, _ = _load_advanced_with_league_avgs()
+        df = annotate_with_streaks(
+            df, daily_df, advanced_df=adv_df if not adv_df.empty else None
+        )
+    elif "streak" not in df.columns:
+        df["streak"] = "—"
+    return df
 
 
 def _filter_inactive_waiver_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -946,13 +994,25 @@ def _filter_inactive_waiver_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def _waiver_df_from_report(report: dict[str, Any]) -> pd.DataFrame:
+def _waiver_df_from_report(
+    report: dict[str, Any],
+    daily_df: pd.DataFrame | None = None,
+    adv_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Build the waiver wire DataFrame directly from the daily report.
 
     The pipeline computes full FA rankings (with names, positions, and
     per-game stats) and embeds them in ``daily_report["waiver_rankings"]``.
     Reading from the report avoids a second DB query and ensures the UI
     is always consistent with the report's adds/drops section.
+
+    Args:
+        report: The daily report dict containing ``waiver_rankings``.
+        daily_df: Recent daily stats for streak annotation. Loaded on demand
+            when None; callers holding the frame should pass it to avoid a
+            redundant query.
+        adv_df: Advanced-stats frame for streak context. Loaded on demand when
+            None.
     """
     rankings = report.get("waiver_rankings") if isinstance(report, dict) else None
     if not isinstance(rankings, list) or not rankings:
@@ -973,9 +1033,11 @@ def _waiver_df_from_report(report: dict[str, Any]) -> pd.DataFrame:
 
     # Annotate streaks if we have recent daily stats.
     try:
-        daily_df = _load_recent_daily_stats()
+        if daily_df is None:
+            daily_df = _load_recent_daily_stats()
         if not daily_df.empty:
-            adv_df, _, _ = _load_advanced_with_league_avgs()
+            if adv_df is None:
+                adv_df, _, _ = _load_advanced_with_league_avgs()
             df = annotate_with_streaks(
                 df, daily_df, advanced_df=adv_df if not adv_df.empty else None
             )
@@ -1021,15 +1083,15 @@ def _load_advanced_with_league_avgs() -> tuple[
     DataFrames and empty dicts are returned when nothing is loaded so the
     caller can fall back gracefully.
     """
+
     # Pull current season stats, but COALESCE each column against the
     # previous season's value so early-season rows (where Savant hasn't
     # cleared its min-sample thresholds for Barrel%/HardHit%/etc.) still
     # get a defensible value to display. Batted-ball metrics are sticky
     # year-over-year so the prior-season fallback is reasonable.
-    try:
-        with managed_connection() as conn:
-            adv: pd.DataFrame = conn.execute(
-                f"""
+    def _op(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+        return conn.execute(
+            f"""
                 WITH max_season AS (
                     SELECT MAX(season) AS s FROM {FACT_PLAYER_ADVANCED_STATS}
                 ),
@@ -1062,9 +1124,12 @@ def _load_advanced_with_league_avgs() -> tuple[
                 FROM curr
                 FULL OUTER JOIN prev ON curr.player_id = prev.player_id
                 """
-            ).fetchdf()
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load advanced stats: %s", exc)
+        ).fetchdf()
+
+    try:
+        adv = run_shared(_op)
+    except Exception:
+        logger.warning("Could not load advanced stats", exc_info=True)
         return pd.DataFrame(), {}, {}
 
     if adv.empty:
@@ -1136,6 +1201,12 @@ _TRANSACTIONS_COLS = [
     "description",
 ]
 
+# Cap the number of call-ups enriched with live MiLB API calls per render, and
+# memoize fetched MiLB stats for the process lifetime so re-renders within a
+# session do not refetch. Keyed by (mlb_id, season).
+_MAX_ENRICHED_CALLUPS = 10
+_MILB_STATS_CACHE: dict[tuple[int, int], dict[str, Any]] = {}
+
 
 def _load_transactions() -> pd.DataFrame:
     """Fetch recent MLB transactions (call-ups, demotions, IL moves, DFAs, releases).
@@ -1164,6 +1235,8 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
     """
     from src.api.mlb_client import get_minor_league_stats, get_player_bio_batch
 
+    season = _current_season_year()
+
     txn_df = txn_df.copy()
     txn_df["scout_note"] = ""
 
@@ -1184,23 +1257,35 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
         except Exception as exc:
             logger.debug("Bio batch fetch failed: %s", exc)
 
-        # Fetch MiLB stats for each call-up
-        for mid in callup_ids:
+        # Fetch MiLB stats for each call-up. These are live, serial MLB API
+        # calls, so cap the number enriched (most recent first) to bound the
+        # request count, isolate per-player failures, and memoize results so
+        # re-renders within a session do not refetch.
+        for mid in callup_ids[:_MAX_ENRICHED_CALLUPS]:
+            cache_key = (mid, season)
+            if cache_key in _MILB_STATS_CACHE:
+                cached = _MILB_STATS_CACHE[cache_key]
+                if cached:
+                    milb_map[mid] = cached
+                continue
             try:
-                milb_df = get_minor_league_stats(mid, 2026)
+                milb_df = get_minor_league_stats(mid, season)
+                top_stats: dict[str, Any] = {}
                 if not milb_df.empty:
                     # Aggregate across levels — take highest level row
                     top = milb_df.iloc[0]
-                    milb_map[mid] = dict(top.to_dict())  # type: ignore[arg-type]
-            except Exception:
-                pass
+                    top_stats = dict(top.to_dict())  # type: ignore[arg-type]
+                    milb_map[mid] = top_stats
+                _MILB_STATS_CACHE[cache_key] = top_stats
+            except Exception as exc:
+                logger.debug("MiLB stats fetch failed for %s: %s", mid, exc)
 
     # Look up MLB stats from MotherDuck
     stats_map: dict[int, dict[str, Any]] = {}
-    try:
-        with managed_connection() as conn:
-            placeholders = ",".join(str(int(x)) for x in target_ids)
-            rows = conn.execute(f"""
+    placeholders = ",".join(str(int(x)) for x in target_ids)
+
+    def _op(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+        return conn.execute(f"""
                 SELECT
                     p.mlb_id,
                     p.full_name,
@@ -1241,17 +1326,19 @@ def _enrich_scout_notes(txn_df: pd.DataFrame) -> pd.DataFrame:
                            SUM(COALESCE(sv,0))
                            + SUM(COALESCE(holds,0)) AS sv_h
                     FROM {FACT_PLAYER_STATS_DAILY}
-                    WHERE stat_date >= '2026-01-01'
+                    WHERE stat_date >= '{season}-01-01'
                     GROUP BY player_id
                 ) s ON s.player_id = p.player_id
                 LEFT JOIN {FACT_PLAYER_ADVANCED_STATS} a
-                    ON a.player_id = p.player_id AND a.season = 2026
+                    ON a.player_id = p.player_id AND a.season = {season}
                 WHERE p.mlb_id IN ({placeholders})
             """).fetchdf()
 
-            for _, row in rows.iterrows():
-                mid = int(row["mlb_id"])
-                stats_map[mid] = dict(row.to_dict())  # type: ignore[arg-type]
+    try:
+        rows = run_shared(_op)
+        for _, row in rows.iterrows():
+            mid = int(row["mlb_id"])
+            stats_map[mid] = dict(row.to_dict())  # type: ignore[arg-type]
     except Exception as exc:
         logger.debug("Scout note stats lookup failed: %s", exc)
 
@@ -1497,22 +1584,24 @@ def _load_projections() -> pd.DataFrame:
     Returns one row per player (latest projection_date), falling back to an
     empty DataFrame when unavailable (projections are optional enrichment).
     """
+
+    def _op(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+        return conn.execute(f"""
+            SELECT
+                player_id, source,
+                proj_h, proj_hr, proj_sb, proj_bb,
+                proj_avg, proj_ops, proj_fpct,
+                proj_ip, proj_w, proj_k, proj_sv_h, proj_whip, proj_k_bb
+            FROM {FACT_PROJECTIONS}
+            WHERE projection_date = (
+                SELECT MAX(projection_date) FROM {FACT_PROJECTIONS}
+            )
+        """).fetchdf()
+
     try:
-        with managed_connection() as conn:
-            df: pd.DataFrame = conn.execute(f"""
-                SELECT
-                    player_id, source,
-                    proj_h, proj_hr, proj_sb, proj_bb,
-                    proj_avg, proj_ops, proj_fpct,
-                    proj_ip, proj_w, proj_k, proj_sv_h, proj_whip, proj_k_bb
-                FROM {FACT_PROJECTIONS}
-                WHERE projection_date = (
-                    SELECT MAX(projection_date) FROM {FACT_PROJECTIONS}
-                )
-            """).fetchdf()
-            return df
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load projections from DB: %s", exc)
+        return run_shared(_op)
+    except Exception:
+        logger.warning("Could not load projections from DB", exc_info=True)
     return pd.DataFrame()
 
 
@@ -1526,37 +1615,40 @@ def _load_news(days: int = 3) -> pd.DataFrame:
         days: Number of days back to load news for.
     """
     team_key = _get_my_team_key()
+
+    def _op(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+        return conn.execute(
+            f"""
+            WITH my_latest AS (
+                SELECT MAX(snapshot_date) AS snap
+                FROM {FACT_ROSTERS}
+                WHERE team_id = ?
+            ),
+            my_players AS (
+                SELECT DISTINCT player_id
+                FROM {FACT_ROSTERS}
+                WHERE team_id = ?
+                  AND snapshot_date = (SELECT snap FROM my_latest)
+            )
+            SELECT
+                n.id, n.player_id, n.player_name, n.headline, n.url,
+                n.source, n.published_at, n.sentiment_label, n.sentiment_score,
+                (mp.player_id IS NOT NULL) AS is_mine
+            FROM {FACT_PLAYER_NEWS} n
+            LEFT JOIN my_players mp ON mp.player_id = n.player_id
+            WHERE n.fetched_at >= NOW() - INTERVAL '{days} days'
+            ORDER BY is_mine DESC, n.published_at DESC
+            LIMIT 200
+            """,
+            [team_key, team_key],
+        ).fetchdf()
+
     try:
-        with managed_connection() as conn:
-            df: pd.DataFrame = conn.execute(
-                f"""
-                WITH my_latest AS (
-                    SELECT MAX(snapshot_date) AS snap
-                    FROM {FACT_ROSTERS}
-                    WHERE team_id = ?
-                ),
-                my_players AS (
-                    SELECT DISTINCT player_id
-                    FROM {FACT_ROSTERS}
-                    WHERE team_id = ?
-                      AND snapshot_date = (SELECT snap FROM my_latest)
-                )
-                SELECT
-                    n.id, n.player_id, n.player_name, n.headline, n.url,
-                    n.source, n.published_at, n.sentiment_label, n.sentiment_score,
-                    (mp.player_id IS NOT NULL) AS is_mine
-                FROM {FACT_PLAYER_NEWS} n
-                LEFT JOIN my_players mp ON mp.player_id = n.player_id
-                WHERE n.fetched_at >= NOW() - INTERVAL '{days} days'
-                ORDER BY is_mine DESC, n.published_at DESC
-                LIMIT 200
-                """,
-                [team_key, team_key],
-            ).fetchdf()
-            if not df.empty:
-                return df
-    except (duckdb.Error, Exception) as exc:
-        logger.warning("Could not load news from DB: %s", exc)
+        df = run_shared(_op)
+        if not df.empty:
+            return df
+    except Exception:
+        logger.warning("Could not load news from DB", exc_info=True)
     return pd.DataFrame()
 
 
@@ -1607,7 +1699,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     def _populate_week_choices() -> None:
         _refresh_counter()
         weeks = _load_available_weeks()
-        ui.update_select("week_select", choices=weeks, selected="latest")
+        # Preserve the user's current selection across refreshes when it still
+        # exists in the new choices; otherwise fall back to "latest".
+        with reactive.isolate():
+            current = str(input.week_select() or "")
+        selected = current if current in weeks else "latest"
+        ui.update_select("week_select", choices=weeks, selected=selected)
 
     @reactive.calc
     def selected_week() -> int | None:
@@ -1634,14 +1731,22 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         return pd.DataFrame(rows)
 
     @reactive.calc
+    def recent_daily_stats() -> pd.DataFrame:
+        """Recent daily stats for streak annotation, loaded once per refresh."""
+        _refresh_counter()
+        return _load_recent_daily_stats()
+
+    @reactive.calc
     def roster_data() -> pd.DataFrame:
         _refresh_counter()
-        return _load_roster()
+        adv_df, _, _ = advanced_stats_bundle()
+        return _load_roster(recent_daily_stats(), adv_df)
 
     @reactive.calc
     def waiver_data() -> pd.DataFrame:
         _refresh_counter()
-        df = _waiver_df_from_report(daily_report())
+        adv_df, _, _ = advanced_stats_bundle()
+        df = _waiver_df_from_report(daily_report(), recent_daily_stats(), adv_df)
         if df.empty:
             return df
         # Hide inactive players: no games played yet OR flagged NA/IL.
@@ -1665,6 +1770,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     ]:
         _refresh_counter()
         return _load_advanced_with_league_avgs()
+
+    @reactive.calc
+    def matchup_yahoo_stats() -> dict[str, dict[str, float]]:
+        """Actual Yahoo scoreboard stats for the selected week (cached)."""
+        _refresh_counter()
+        return _load_yahoo_matchup_stats(selected_week())
 
     @reactive.calc
     def projection_data() -> pd.DataFrame:
@@ -1802,48 +1913,10 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             col_widths=[4, 4, 4],
         )
 
-    @render.data_frame
-    def lineup_table() -> pd.DataFrame:
-        report = daily_report()
-        lineup = report.get("lineup", {})
-        if not isinstance(lineup, dict):
-            return pd.DataFrame(columns=["Slot", "Player", "Streak"])
-        roster = roster_data()
-        id_to_name: dict[str, str] = {}
-        id_to_streak: dict[str, str] = {}
-        if not roster.empty:
-            if "player_id" in roster.columns and "player_name" in roster.columns:
-                id_to_name = dict(
-                    zip(
-                        roster["player_id"].astype(str),
-                        roster["player_name"].astype(str),
-                        strict=False,
-                    )
-                )
-            if "player_id" in roster.columns and "streak" in roster.columns:
-                id_to_streak = dict(
-                    zip(
-                        roster["player_id"].astype(str),
-                        roster["streak"].astype(str),
-                        strict=False,
-                    )
-                )
-        rows = []
-        for slot, pid in lineup.items():
-            pid_str = str(pid)
-            rows.append(
-                {
-                    "Slot": slot,
-                    "Player": id_to_name.get(pid_str, pid_str),
-                    "Streak": id_to_streak.get(pid_str, "—"),
-                }
-            )
-        return pd.DataFrame(rows)
-
     @render.ui
     def matchup_scoreboard_ui() -> Tag:
         df = matchup_data()
-        yahoo = _load_yahoo_matchup_stats(selected_week())
+        yahoo = matchup_yahoo_stats()
         if df.empty and not yahoo["mine"]:
             return ui.p(
                 "No matchup data available.", style="padding:0.5rem;color:#666;"
@@ -2648,8 +2721,8 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
             cat = str(r.get("category", ""))
             cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
             win_dir = _CATEGORY_META.get(cat, {}).get("win", "highest")
-            my_val = float(r.get("my_value", 0))
-            opp_val = float(r.get("opp_value", 0))
+            my_val = _coerce_float(r.get("my_value"))
+            opp_val = _coerce_float(r.get("opp_value"))
             my_leads = bool(r.get("my_leads", False))
 
             gap = abs(my_val - opp_val)
@@ -2736,16 +2809,20 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
                 style="color:#888;padding:0.5rem;",
             )
 
-        # Build rows with delta for sorting
+        # Build rows with delta for sorting. Iterate positionally so each
+        # category flips only its own entry in ``probs`` — categories sharing
+        # the same win_prob must not all flip together.
         flip_entries: list[tuple[float, list[Any]]] = []
-        for _, r in in_play_df.iterrows():
+        for pos, (_, r) in enumerate(df.iterrows()):
+            wp = float(r.get("win_prob", 0.5))
+            if not (0.35 <= wp < 0.70):
+                continue
             cat = str(r.get("category", ""))
             cat_label = _CATEGORY_META.get(cat, {}).get("label", cat.upper())
-            wp = float(r.get("win_prob", 0.5))
             leading = bool(r.get("my_leads", False))
 
             # Marginal match win prob if this category flips
-            probs_flipped = [1.0 - wp if p == wp else p for p in probs]
+            probs_flipped = [1.0 - p if i == pos else p for i, p in enumerate(probs)]
             mwp_flipped = match_win_probability(probs_flipped)
             delta = mwp_flipped - mwp
             delta_str = f"+{delta * 100:.1f}%" if delta >= 0 else f"{delta * 100:.1f}%"
@@ -3170,7 +3247,7 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
     def trades_ui() -> Tag:
         report = daily_report()
         trades = report.get("trades", [])
-        if not trades:
+        if not isinstance(trades, list) or not trades:
             return ui.p("No trade proposals available.", style="color:#888;")
         cards: list[Any] = []
         for trade in trades:
@@ -3317,7 +3394,12 @@ def server(input: Inputs, output: Outputs, session: Session) -> None:
         )
         choices: dict[str, str] = {"All": "All Players"}
         choices.update({n: n for n in names})
-        ui.update_select("news_player_filter", choices=choices)
+        # Preserve the user's current player filter when it still exists in
+        # the refreshed choices; otherwise fall back to "All".
+        with reactive.isolate():
+            current = str(input.news_player_filter() or "")
+        selected = current if current in choices else "All"
+        ui.update_select("news_player_filter", choices=choices, selected=selected)
 
     @render.ui
     def news_ui() -> Tag:

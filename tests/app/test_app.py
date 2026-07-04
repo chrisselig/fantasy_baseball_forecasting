@@ -389,3 +389,31 @@ def test_roster_tier_legend_contains_all_four_tiers() -> None:
     assert "Poor" in html
     for color in _TIER_COLORS.values():
         assert color in html
+
+
+# ─── _coerce_float ─────────────────────────────────────────────────────────
+
+
+def test_coerce_float_parses_numeric_strings_and_numbers() -> None:
+    from src.app.server import _coerce_float
+
+    assert _coerce_float(3) == 3.0
+    assert _coerce_float("2.5") == 2.5
+    assert _coerce_float(1.25) == 1.25
+
+
+def test_coerce_float_falls_back_on_none_nan_and_junk() -> None:
+    from src.app.server import _coerce_float
+
+    assert _coerce_float(None) == 0.0
+    assert _coerce_float(float("nan")) == 0.0
+    assert _coerce_float("not a number") == 0.0
+    assert _coerce_float(None, default=-1.0) == -1.0
+
+
+def test_current_season_year_is_current_year() -> None:
+    import datetime
+
+    from src.app.server import _current_season_year
+
+    assert _current_season_year() == datetime.date.today().year
