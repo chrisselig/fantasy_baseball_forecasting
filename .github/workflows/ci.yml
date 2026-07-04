@@ -3,6 +3,8 @@ name: CI and Deploy
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -33,7 +35,7 @@ jobs:
         run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy src/
+        run: mypy .
 
       - name: Test
         run: pytest -q
@@ -48,6 +50,8 @@ jobs:
   deploy:
     name: Deploy to shinyapps.io
     needs: quality
+    # Deploy only on push to main (or manual dispatch) — never on pull requests.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
