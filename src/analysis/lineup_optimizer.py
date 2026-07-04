@@ -593,6 +593,9 @@ _COUNTING_CATS = {"H", "HR", "SB", "BB", "W", "K", "SV+H"}
 _RATE_CATS = {"AVG", "OPS", "FPCT", "WHIP", "K/BB"}
 # Lower-is-better categories
 _LOWER_WINS = {"WHIP"}
+# Typical league-average value for lower-is-better rate cats, used as the
+# baseline so a good (low) WHIP produces a positive contribution score.
+_LOWER_WINS_BASELINE: dict[str, float] = {"WHIP": 1.30}
 
 
 def generate_trade_proposals(
@@ -632,7 +635,7 @@ def generate_trade_proposals(
         status = str(cat.get("status", ""))
         name = str(cat.get("category", "")).upper()
         wp = float(cat.get("win_prob", 0.5))  # type: ignore[arg-type]
-        if status in ("safe_loss", "trailing") or wp < 0.35:
+        if status in ("safe_loss", "flippable_loss") or wp < 0.35:
             weak_cats.append(name)
         elif status in ("safe_win",) or wp >= 0.70:
             strong_cats.append(name)
@@ -644,6 +647,7 @@ def generate_trade_proposals(
     my_tradeable = _score_players_by_categories(my_roster_df, strong_cats)
 
     # 3. For each other team, score their players by how much they help my weak cats
+    my_team_name = team_names.get(my_team_key, my_team_key)
     proposals: list[dict[str, object]] = []
     for opp_key, opp_roster in league_rosters.items():
         if opp_key == my_team_key or opp_roster.empty:
@@ -695,7 +699,7 @@ def generate_trade_proposals(
                 proposals.append(
                     {
                         "give_player": str(chip.get("full_name", "")),
-                        "give_team": opp_name,
+                        "give_team": my_team_name,
                         "give_helps": chip_helps,
                         "receive_player": str(target.get("full_name", "")),
                         "receive_team": opp_name,
@@ -779,7 +783,11 @@ def _player_top_categories(
         if col:
             val = float(player.get(col, 0) or 0)
             if cat in _LOWER_WINS:
-                val = -val  # Lower WHIP is better
+                # Score relative to a league-typical baseline so a good (low)
+                # WHIP yields a positive contribution. A value at/above the
+                # baseline scores <= 0 and is dropped below.
+                baseline = _LOWER_WINS_BASELINE.get(cat, 0.0)
+                val = baseline - val if val > 0 else 0.0
             if val > 0:
                 scored.append((cat, val))
     scored.sort(key=lambda x: x[1], reverse=True)
