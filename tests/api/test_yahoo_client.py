@@ -20,7 +20,6 @@ from src.api.yahoo_client import (
     YahooAuthError,
     YahooClient,
     _parse_free_agents_response,
-    _parse_matchup_response,
     _parse_player_details,
     _parse_roster_response,
     _parse_scoreboard_response,
@@ -995,11 +994,6 @@ class TestParsers:
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 0
 
-    def test_parse_matchup_response_empty_data(self) -> None:
-        df = _parse_matchup_response({}, league_key="423.l.87941")
-        assert isinstance(df, pd.DataFrame)
-        assert "matchup_id" in df.columns
-
     def test_parse_scoreboard_response_empty_data(self) -> None:
         df = _parse_scoreboard_response({}, league_key="423.l.87941")
         assert isinstance(df, pd.DataFrame)
@@ -1069,3 +1063,39 @@ class TestParsers:
         df = _parse_standings_response({})
         assert isinstance(df, pd.DataFrame)
         assert "team_id" in df.columns
+
+
+# ── Session retry / refresh-token tests ───────────────────────────────────────
+
+
+class TestSessionAndRetry:
+    def test_session_has_retry_adapter(self, client: YahooClient) -> None:
+        """The client mounts a retrying adapter on https for rate-limiting."""
+        adapter = client._session.get_adapter("https://example.com")
+        retries = adapter.max_retries
+        assert retries.total == 3
+        assert retries.backoff_factor == 1
+        assert set(retries.status_forcelist) == {429, 500, 502, 503, 504}
+
+    @responses_lib.activate
+    def test_get_retries_transient_error_then_succeeds(
+        self, client: YahooClient
+    ) -> None:
+        """A transient 503 is retried and the subsequent 200 is returned."""
+        responses_lib.add(
+            responses_lib.GET, BASE + "some/endpoint", status=503, body="down"
+        )
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "some/endpoint",
+            status=200,
+            json={"fantasy_content": {"ok": True}},
+        )
+        result = client._get("some/endpoint")
+        assert result["fantasy_content"]["ok"] is True
+        assert len(responses_lib.calls) == 2
+
+    def test_refresh_token_property_returns_current(self, client: YahooClient) -> None:
+        assert client.refresh_token == REFRESH_TOKEN
+        client._refresh_token = "rotated_value"
+        assert client.refresh_token == "rotated_value"

@@ -29,6 +29,8 @@ from typing import Any
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,25 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://fantasysports.yahooapis.com/fantasy/v2/"
 TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
+
+
+def _build_retrying_session() -> requests.Session:
+    """Return a requests.Session with retry/backoff mounted on https.
+
+    Retries transient failures (429 rate-limit + 5xx) with exponential backoff,
+    satisfying the project's requirement to rate-limit Yahoo API calls. Reusing
+    a single Session also enables HTTP connection pooling across calls.
+    """
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET", "POST"]),
+    )
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
 
 # Yahoo access tokens expire after 3600 seconds.  Refresh if fewer than
 # TOKEN_EXPIRY_BUFFER_SECONDS remain on the clock.
@@ -87,6 +108,18 @@ class YahooClient:
         # issued-at timestamp to 0 ensures _refresh_token_if_needed() will
         # refresh immediately using the long-lived refresh token.
         self._token_issued_at: float = 0.0
+        # Shared session with retry/backoff for all Yahoo HTTP calls.
+        self._session = _build_retrying_session()
+
+    @property
+    def refresh_token(self) -> str:
+        """Return the current Yahoo OAuth refresh token.
+
+        Yahoo rotates the refresh token on every access-token refresh, so this
+        may differ from the value the client was constructed with. Callers use
+        it to persist the rotated token (e.g. back to GitHub Secrets).
+        """
+        return self._refresh_token
 
     # ── Construction helpers ──────────────────────────────────────────────────
 
@@ -143,7 +176,7 @@ class YahooClient:
             return  # token is still fresh
 
         logger.info("Access token is %d seconds old — refreshing.", int(age))
-        response = requests.post(
+        response = self._session.post(
             TOKEN_URL,
             auth=(self._consumer_key, self._consumer_secret),
             data={
@@ -196,12 +229,19 @@ class YahooClient:
 
         logger.debug("GET %s params=%s", url, merged_params)
 
-        response = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {self._access_token}"},
-            params=merged_params,
-            timeout=30,
-        )
+        try:
+            response = self._session.get(
+                url,
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                params=merged_params,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            # Retries were exhausted (e.g. repeated 5xx/429) or a network error
+            # occurred. Surface as a YahooAPIError so callers handle it uniformly.
+            raise YahooAPIError(
+                f"Request to {url} failed after retries: {exc}"
+            ) from exc
 
         logger.info("Response status: %d for %s", response.status_code, url)
 
@@ -240,7 +280,7 @@ class YahooClient:
         # 2. Auto-detect from Yahoo API
         try:
             self._refresh_token_if_needed()
-            response = requests.get(
+            response = self._session.get(
                 BASE_URL + "games;game_codes=mlb",
                 headers={"Authorization": f"Bearer {self._access_token}"},
                 params={"format": "json"},
@@ -1004,222 +1044,6 @@ def _extract_team_stats(team: Any) -> list[Any]:
             if isinstance(inner, dict) and "stats" in inner:
                 return list(inner["stats"])
     return []
-
-
-def _parse_matchup_response(data: dict[str, Any], league_key: str) -> pd.DataFrame:
-    """Parse matchup response into the fact_matchups shape.
-
-    Yahoo structures the ``team/{key}/matchups`` response in one of two ways:
-
-    **Format A** (list-style ``team``)::
-
-        {"fantasy_content": {"team": [[{team_meta}], {"matchups": {…}}]}}
-
-    **Format B** (dict-style ``team``)::
-
-        {"fantasy_content": {"team": {"team_key": "…", "matchups": {…}}}}
-
-    Both formats are handled.  Within each matchup, ``teams`` may likewise
-    be a dict with numeric-string keys or a list.
-    """
-    rows: list[dict[str, Any]] = []
-
-    try:
-        team_data = _safe_get(data, "fantasy_content", "team", default=None)
-        if team_data is None:
-            logger.warning("Matchup response has no 'team' key.")
-            return _empty_matchup_df()
-
-        # Resolve matchups dict from either format
-        if isinstance(team_data, list) and len(team_data) > 1:
-            matchups = (
-                team_data[1].get("matchups", {})
-                if isinstance(team_data[1], dict)
-                else {}
-            )
-        elif isinstance(team_data, dict):
-            matchups = team_data.get("matchups", {})
-        else:
-            logger.warning(
-                "Matchup response 'team' is unexpected type: %s",
-                type(team_data).__name__,
-            )
-            return _empty_matchup_df()
-
-        if not isinstance(matchups, dict) or not matchups:
-            logger.warning(
-                "Matchup 'matchups' empty or not a dict (type=%s, keys=%s).",
-                type(matchups).__name__,
-                list(matchups.keys())[:5] if isinstance(matchups, dict) else "n/a",
-            )
-            return _empty_matchup_df()
-
-        logger.info(
-            "Matchup response contains %s entries (keys: %s).",
-            matchups.get("count", "?"),
-            [k for k in matchups if k != "count"][:5],
-        )
-
-        league_id = int(league_key.split(".")[-1])
-
-        _logged_sample = False  # Log first entry structure once for debugging
-        for _k, matchup_entry in matchups.items():
-            if _k == "count":
-                continue
-            if not isinstance(matchup_entry, dict):
-                continue
-
-            # Yahoo may wrap the matchup data as:
-            #   {"matchup": {...}}  (expected)
-            # or the matchup_entry itself may BE the matchup data.
-            matchup = matchup_entry.get("matchup", {})
-            if not matchup:
-                # Try treating the entry itself as the matchup
-                if "week" in matchup_entry or "teams" in matchup_entry:
-                    matchup = matchup_entry
-                else:
-                    if not _logged_sample:
-                        logger.warning(
-                            "Matchup entry %s has no 'matchup' key. Keys present: %s",
-                            _k,
-                            list(matchup_entry.keys())[:10],
-                        )
-                        _logged_sample = True
-                    continue
-
-            week_number = int(matchup.get("week", 0))
-            season = int(matchup.get("week_start", "2026-01-01")[:4])
-
-            teams_data = matchup.get("teams", {})
-
-            # Log the first matchup's structure for debugging
-            if not _logged_sample:
-                logger.info(
-                    "Sample matchup (week %d): entry_keys=%s, "
-                    "matchup_keys=%s, teams_type=%s, teams_keys=%s",
-                    week_number,
-                    list(matchup_entry.keys())[:8],
-                    list(matchup.keys())[:8],
-                    type(teams_data).__name__,
-                    (
-                        list(teams_data.keys())[:5]
-                        if isinstance(teams_data, dict)
-                        else f"len={len(teams_data)}"
-                        if isinstance(teams_data, list)
-                        else "n/a"
-                    ),
-                )
-                _logged_sample = True
-
-            team_keys: list[str] = []
-            team_stats: list[dict[str, Any]] = []
-
-            # Yahoo may return teams as a dict {"0": {…}, "1": {…}, "count": N}
-            # or as a list [{…}, {…}].
-            team_items: list[tuple[str, Any]] = _extract_team_items(teams_data)
-
-            for _tk, team_entry in team_items:
-                team = team_entry.get("team", [])
-                if not team:
-                    continue
-
-                tkey = _extract_team_key(team)
-                team_keys.append(tkey)
-
-                stats_raw = _extract_team_stats(team)
-                stats_dict: dict[str, float] = {}
-                for stat_entry in stats_raw:
-                    if isinstance(stat_entry, dict):
-                        stat = stat_entry.get("stat", {})
-                        sid = stat.get("stat_id", "")
-                        val = stat.get("value", None)
-                        if sid and val is not None:
-                            try:
-                                stats_dict[str(sid)] = float(val)
-                            except (ValueError, TypeError):
-                                stats_dict[str(sid)] = 0.0
-                team_stats.append(stats_dict)
-
-            if len(team_keys) < 2:
-                logger.debug(
-                    "Matchup week %d has %d team keys (%s), need 2. Skipping.",
-                    week_number,
-                    len(team_keys),
-                    team_keys,
-                )
-                continue
-
-            home_key, away_key = team_keys[0], team_keys[1]
-            home_stats = team_stats[0] if team_stats else {}
-            away_stats = team_stats[1] if len(team_stats) > 1 else {}
-
-            matchup_id = (
-                f"{league_id}_{season}_W{week_number:02d}_{home_key}vs{away_key}"
-            )
-
-            row: dict[str, Any] = {
-                "matchup_id": matchup_id,
-                "league_id": league_id,
-                "week_number": week_number,
-                "season": season,
-                "team_id_home": home_key,
-                "team_id_away": away_key,
-                # Batter stats
-                "h_home": home_stats.get("7"),
-                "h_away": away_stats.get("7"),
-                "hr_home": home_stats.get("12"),
-                "hr_away": away_stats.get("12"),
-                "sb_home": home_stats.get("16"),
-                "sb_away": away_stats.get("16"),
-                "bb_home": home_stats.get("13"),
-                "bb_away": away_stats.get("13"),
-                "avg_home": home_stats.get("3"),
-                "avg_away": away_stats.get("3"),
-                "ops_home": home_stats.get("55"),
-                "ops_away": away_stats.get("55"),
-                "fpct_home": home_stats.get("23"),
-                "fpct_away": away_stats.get("23"),
-                # Pitcher stats
-                "w_home": home_stats.get("28"),
-                "w_away": away_stats.get("28"),
-                "k_home": home_stats.get("42"),
-                "k_away": away_stats.get("42"),
-                "whip_home": home_stats.get("48"),
-                "whip_away": away_stats.get("48"),
-                "k_bb_home": home_stats.get("26"),
-                "k_bb_away": away_stats.get("26"),
-                "sv_h_home": home_stats.get("57"),
-                "sv_h_away": away_stats.get("57"),
-                "categories_won_home": None,
-                "categories_won_away": None,
-                "result": None,
-            }
-            rows.append(row)
-    except (KeyError, IndexError, TypeError) as exc:
-        logger.warning("Failed to parse matchup response: %s", exc)
-
-    logger.info("Parsed %d matchup rows from Yahoo response.", len(rows))
-    if not rows:
-        # Dump top-level structure for debugging
-        _keys = []
-        fc = data.get("fantasy_content", {}) if isinstance(data, dict) else {}
-        team_obj = fc.get("team") if isinstance(fc, dict) else None
-        if isinstance(team_obj, list):
-            _keys = [
-                type(item).__name__
-                + (f"(keys={list(item.keys())[:3]})" if isinstance(item, dict) else "")
-                for item in team_obj[:4]
-            ]
-        elif isinstance(team_obj, dict):
-            _keys = list(team_obj.keys())[:6]
-        logger.warning(
-            "Matchup parser produced 0 rows. "
-            "Response structure: fantasy_content.team = %s (type=%s)",
-            _keys,
-            type(team_obj).__name__ if team_obj is not None else "None",
-        )
-        return _empty_matchup_df()
-    return pd.DataFrame(rows)
 
 
 def _empty_matchup_df() -> pd.DataFrame:
