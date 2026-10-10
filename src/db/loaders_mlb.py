@@ -423,8 +423,10 @@ def load_projections(
     insert_df = working[table_columns].copy()
 
     conn.register("_projections_staging", insert_df)
+    columns = ", ".join(table_columns)
     conn.execute(
-        f"INSERT OR REPLACE INTO {FACT_PROJECTIONS} SELECT * FROM _projections_staging"
+        f"INSERT OR REPLACE INTO {FACT_PROJECTIONS} ({columns}) "
+        f"SELECT {columns} FROM _projections_staging"
     )
     conn.unregister("_projections_staging")
 
