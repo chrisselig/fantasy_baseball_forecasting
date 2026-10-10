@@ -1,5 +1,40 @@
 # Fantasy Baseball Intelligence App
+
+[![CI and Deploy](https://github.com/chrisselig/fantasy_baseball_forecasting/actions/workflows/ci.yml/badge.svg)](https://github.com/chrisselig/fantasy_baseball_forecasting/actions/workflows/ci.yml)
+
 An end-to-end Python platform to manage my Yahoo Fantasy Baseball team and win the league.
+
+## For Hiring Managers
+
+A personal side project, but built with the same engineering discipline I'd bring to
+production work: a real ETL pipeline, a cloud data warehouse, automated tests, and a
+CI/CD pipeline — not just a notebook.
+
+**What it does:** Pulls live roster, matchup, and transaction data from the Yahoo
+Fantasy Sports API, enriches it with MLB stats (via `pybaseball`/Statcast) and news/call-up
+feeds, and turns that into daily lineup recommendations, head-to-head category win
+probabilities, and ranked waiver-wire targets — surfaced in a web dashboard.
+
+**Stack:** Python 3.12, DuckDB/MotherDuck (cloud OLAP warehouse), Shiny for Python,
+GitHub Actions for both CI and scheduled pipeline runs, deployed to shinyapps.io.
+
+**Engineering practices:**
+- **CI/CD** — every PR runs `ruff` (format + lint), `mypy --strict`, and the full
+  `pytest` suite (21 test files) via GitHub Actions; merges to `main` auto-deploy to
+  shinyapps.io. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+- **Scheduled data pipeline** — a daily cron workflow ingests and reprocesses data
+  independently of the (read-only) web app, so a slow API or bad pipeline run can't
+  take the dashboard down.
+- **Typed, tested codebase** — full type hints enforced repo-wide (`src/`, `tests/`,
+  `scripts/`), feature-branch + PR workflow, no direct commits to `main`.
+- **Separation of concerns** — ingestion (`api/`, `db/`), analysis (`analysis/`), and
+  presentation (`app/`) are independent layers, each unit-tested in isolation.
+
+**What I learned:** working with a real third-party OAuth API (Yahoo) that requires
+token rotation across scheduled, non-interactive runs; schema design for a small
+analytical warehouse (fact/dimension tables, slowly-changing roster snapshots); and
+keeping a solo project maintainable through CI gates and tests rather than manual
+discipline alone.
 
 ## Documentation
 
@@ -125,6 +160,7 @@ fantasy_baseball_forecasting/
 │   │   ├── lineup_optimizer.py    # Daily lineup + add/drop recommendations
 │   │   ├── hot_cold.py            # Rolling hot/cold streak detection
 │   │   ├── news.py                # News sentiment/impact tagging
+│   │   ├── positions.py           # Shared position-string parsing / pitcher classification
 │   │   └── shrinkage.py           # Regression-to-mean for small-sample stats
 │   ├── pipeline/
 │   │   ├── daily_run.py           # GitHub Actions pipeline entry point
@@ -404,7 +440,7 @@ deploys the app to shinyapps.io.
 |---|---|
 | Yahoo API auth | `yahoo_oauth`, `requests` |
 | Data manipulation | `pandas`, `numpy` |
-| MLB transactions / news | `requests`, `beautifulsoup4` |
+| MLB transactions / news | `requests`, `beautifulsoup4`, `feedparser`, `nltk` |
 | Statcast data | `pybaseball` |
 | Shiny app framework | `shiny` (Shiny for Python) |
 | Deployment | `rsconnect-python` |

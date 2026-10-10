@@ -5,6 +5,11 @@ on:
     # 9 am MT (UTC-6 standard / UTC-7 daylight).
     # Standard time (Nov-Mar): cron '0 16 * * *'
     # Daylight time  (Mar-Nov): cron '0 15 * * *'
+    #
+    # GitHub auto-suspends `schedule` triggers after 60 days with no push to
+    # the repo (any push re-arms it). A long offseason gap with no commits
+    # will silently stop this cron — push something (even a docs change) if
+    # the pipeline goes quiet. See issue #101.
     - cron: '0 15 * * *'
   workflow_dispatch:
 
