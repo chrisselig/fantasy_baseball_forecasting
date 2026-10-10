@@ -42,8 +42,11 @@ If the issue is with the Yahoo API:
 - Test with a minimal request:
   ```python
   from yahoo_oauth import OAuth2
+
   sc = OAuth2(None, None, from_file="oauth2.json")
-  response = sc.session.get("https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games")
+  response = sc.session.get(
+      "https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games"
+  )
   print(response.status_code, response.text[:500])
   ```
 

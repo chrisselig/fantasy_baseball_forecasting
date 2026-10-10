@@ -443,13 +443,16 @@ def _load_daily_report() -> dict:
     """Load today's recommendations. Returns mock data if DB unavailable."""
     ...
 
+
 @reactive.calc
 def daily_report():
     return _load_daily_report()
 
+
 @reactive.calc
 def matchup_data():
     return _load_matchup_data()
+
 
 @reactive.calc
 def waiver_data():
