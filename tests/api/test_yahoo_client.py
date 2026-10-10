@@ -9,6 +9,7 @@ traffic occurs during these tests.
 
 from __future__ import annotations
 
+import logging
 import time
 
 import pandas as pd
@@ -40,8 +41,13 @@ TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
 
 
 @pytest.fixture()
-def client() -> YahooClient:
+def client(monkeypatch: pytest.MonkeyPatch) -> YahooClient:
     """A YahooClient with test credentials and a fresh token timestamp."""
+    # Pin the game key explicitly so tests don't depend on the real
+    # auto-detect/fallback behavior in _game_key (covered separately in
+    # TestGameKey below). Matches the "423" used throughout this file's
+    # fixtures.
+    monkeypatch.setenv("YAHOO_GAME_KEY", "423")
     c = YahooClient(
         consumer_key=CONSUMER_KEY,
         consumer_secret=CONSUMER_SECRET,
@@ -1063,6 +1069,80 @@ class TestParsers:
         df = _parse_standings_response({})
         assert isinstance(df, pd.DataFrame)
         assert "team_id" in df.columns
+
+
+# ── Game key resolution tests ─────────────────────────────────────────────────
+
+
+class TestGameKey:
+    def test_uses_env_override(self, client: YahooClient) -> None:
+        # The `client` fixture sets YAHOO_GAME_KEY=423.
+        assert client._game_key() == "423"
+
+    @responses_lib.activate
+    def test_auto_detects_latest_season_when_no_override(
+        self, client: YahooClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("YAHOO_GAME_KEY", raising=False)
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "games;game_codes=mlb",
+            status=200,
+            json={
+                "fantasy_content": {
+                    "games": {
+                        "0": {"game": [{"game_key": "423", "season": "2025"}]},
+                        "1": {"game": [{"game_key": "469", "season": "2026"}]},
+                        "count": 2,
+                    }
+                }
+            },
+        )
+        assert client._game_key() == "469"
+
+    @responses_lib.activate
+    def test_falls_back_when_response_has_no_games(
+        self,
+        client: YahooClient,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.delenv("YAHOO_GAME_KEY", raising=False)
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "games;game_codes=mlb",
+            status=200,
+            json={"fantasy_content": {"games": {"count": 0}}},
+        )
+        with caplog.at_level(logging.WARNING):
+            key = client._game_key()
+        assert key == "469"
+        assert "no parseable game/season entries" in caplog.text
+
+    @responses_lib.activate
+    def test_falls_back_on_http_error(
+        self,
+        client: YahooClient,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.delenv("YAHOO_GAME_KEY", raising=False)
+        # 403 is not in the retry status_forcelist, so this returns directly.
+        responses_lib.add(
+            responses_lib.GET,
+            BASE + "games;game_codes=mlb",
+            status=403,
+            json={"error": "denied"},
+        )
+        with caplog.at_level(logging.WARNING):
+            key = client._game_key()
+        assert key == "469"
+        assert "HTTP 403" in caplog.text
+
+    def test_caches_result(self, client: YahooClient) -> None:
+        assert client._game_key() == "423"
+        client._cached_game_key = "overridden"
+        assert client._game_key() == "overridden"
 
 
 # ── Session retry / refresh-token tests ───────────────────────────────────────

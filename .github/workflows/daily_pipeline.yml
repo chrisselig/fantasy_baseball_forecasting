@@ -55,6 +55,11 @@ jobs:
           YAHOO_ACCESS_TOKEN: ${{ secrets.YAHOO_ACCESS_TOKEN }}
           YAHOO_REFRESH_TOKEN: ${{ secrets.YAHOO_REFRESH_TOKEN }}
           YAHOO_TEAM_ID: ${{ secrets.YAHOO_TEAM_ID }}
+          # Yahoo's MLB game key changes every season and can't be reliably
+          # auto-detected (see src/api/yahoo_client.py::_game_key). Set this
+          # repo variable each season instead of relying on the in-code
+          # fallback. Current value (469) matches config/league_settings.yaml.
+          YAHOO_GAME_KEY: ${{ vars.YAHOO_GAME_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # GH_PAT: a fine-grained PAT with "Secrets: read and write" on this
           # repo, stored as the GH_PAT secret. The default GITHUB_TOKEN above

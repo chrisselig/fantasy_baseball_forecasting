@@ -310,11 +310,23 @@ class YahooClient:
                     )
                     self._cached_game_key = best_key
                     return self._cached_game_key
+                logger.warning(
+                    "Game key auto-detection returned no games (response had"
+                    " no parseable game/season entries); using fallback."
+                )
+            else:
+                logger.warning(
+                    "Game key auto-detection got HTTP %d; using fallback.",
+                    response.status_code,
+                )
         except Exception as exc:
             logger.warning("Game key auto-detection failed: %s", exc)
 
-        # Fallback
-        self._cached_game_key = "423"
+        # Fallback — only reached if YAHOO_GAME_KEY isn't set and
+        # auto-detection didn't return a usable key. Set the YAHOO_GAME_KEY
+        # repo variable (wired into daily_pipeline.yml) each season instead
+        # of relying on this; it goes stale every year Yahoo rolls the key.
+        self._cached_game_key = "469"
         logger.warning("Using fallback game key: %s", self._cached_game_key)
         return self._cached_game_key
 

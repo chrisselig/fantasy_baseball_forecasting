@@ -25,12 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 def debug() -> None:
-    with managed_connection() as conn:
-        cols = conn.execute(f"DESCRIBE {FACT_PROJECTIONS}").fetchall()
-        print(f"\n=== TEMP: {FACT_PROJECTIONS} live columns ({len(cols)}) ===")
-        for c in cols:
-            print(f"  {c}")
-
     settings = load_league_settings()
     team_key = settings.my_team_key
     today = datetime.date(2026, 4, 9)
