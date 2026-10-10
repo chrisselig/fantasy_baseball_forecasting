@@ -341,17 +341,32 @@ _DDL_IN_ORDER = [
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+# Columns added to a DDL above after the live table already existed.
+# CREATE TABLE IF NOT EXISTS never alters an existing table, so a column
+# added here needs a matching entry below or it silently never reaches
+# tables created before the DDL changed.
+_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    (FACT_PROJECTIONS, "games_per_day", "DECIMAL(5, 3)"),
+]
+
+
 def create_all_tables(conn: duckdb.DuckDBPyConnection) -> None:
     """Create all application tables if they do not already exist.
 
     Safe to call on a database that already has tables — uses
-    CREATE TABLE IF NOT EXISTS throughout.
+    CREATE TABLE IF NOT EXISTS throughout, then backfills any columns
+    added to a DDL after the live table was first created (see
+    ``_COLUMN_MIGRATIONS``).
 
     Args:
         conn: An open DuckDB connection (MotherDuck or in-memory).
     """
     for ddl in _DDL_IN_ORDER:
         conn.execute(ddl)
+    for table, column, col_type in _COLUMN_MIGRATIONS:
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
+        )
     logger.info("All %d tables created/verified.", len(ALL_TABLES))
 
 
