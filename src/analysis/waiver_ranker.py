@@ -469,14 +469,14 @@ def find_recommended_drop(
             if not no_games.empty:
                 if "overall_score" in no_games.columns:
                     return str(
-                        no_games.loc[no_games["overall_score"].idxmin(), "player_id"]
+                        no_games.at[no_games["overall_score"].idxmin(), "player_id"]
                     )
                 return str(no_games.iloc[0]["player_id"])
 
         # Priority 2: Bench players (lowest score)
         if "overall_score" in bench_candidates.columns:
             return str(
-                bench_candidates.loc[
+                bench_candidates.at[
                     bench_candidates["overall_score"].idxmin(), "player_id"
                 ]
             )
@@ -495,14 +495,14 @@ def find_recommended_drop(
         if not pos_matches.empty:
             if "overall_score" in pos_matches.columns:
                 return str(
-                    pos_matches.loc[pos_matches["overall_score"].idxmin(), "player_id"]
+                    pos_matches.at[pos_matches["overall_score"].idxmin(), "player_id"]
                 )
             return str(pos_matches.iloc[0]["player_id"])
 
     # Priority 4: Any same-type droppable player (last resort)
     if not droppable.empty:
         if "overall_score" in droppable.columns:
-            return str(droppable.loc[droppable["overall_score"].idxmin(), "player_id"])
+            return str(droppable.at[droppable["overall_score"].idxmin(), "player_id"])
         return str(droppable.iloc[0]["player_id"])
 
     return ""
